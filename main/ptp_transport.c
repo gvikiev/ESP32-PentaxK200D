@@ -17,6 +17,8 @@
 #define PTP_DEFAULT_TIMEOUT_MS   5000u
 #define INTR_BUF_SIZE            64u
 
+#define PENTAX_USB_VENDOR_ID     0x0a17u /* Pentax Corporation, per USB-IF */
+
 static const char *TAG = "ptp_transport";
 
 /* ------------------------------- Singleton state -------------------------------- */
@@ -425,8 +427,15 @@ static void try_open_device(uint8_t address)
     const usb_intf_desc_t *intf = find_still_image_interface(cfg_desc);
     s_dev_hdl = dev_hdl;
     if (!intf) {
-        ESP_LOGW(TAG, "no USB Still Image (PTP) interface found on this device - "
-                      "on the K200D, set [USB Connection] to [PictBridge] (not [PC]) in the camera menu");
+        if (!dev_desc || dev_desc->idVendor != PENTAX_USB_VENDOR_ID) {
+            ESP_LOGW(TAG, "attached device is not a Pentax camera (VID=0x%04x, expected 0x%04x) - "
+                          "check that the K200D (not some other device) is plugged into the "
+                          "USB-host connector, and that it is powered on",
+                          dev_desc ? dev_desc->idVendor : 0, PENTAX_USB_VENDOR_ID);
+        } else {
+            ESP_LOGW(TAG, "no USB Still Image (PTP) interface found on this device - "
+                          "on the K200D, set [USB Connection] to [PictBridge] (not [PC]) in the camera menu");
+        }
         set_link_state(PTP_LINK_NOT_PTP);
         return;
     }
