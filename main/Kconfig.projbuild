@@ -1,0 +1,45 @@
+menu "PentaxHub Configuration"
+
+    config PENTAXHUB_AP_SSID
+        string "WiFi access point SSID"
+        default "PentaxHub"
+        help
+            Name of the WiFi network the ESP32-S3 creates. Connect to it
+            from a phone/laptop, then open http://192.168.4.1/.
+
+    config PENTAXHUB_AP_PASSWORD
+        string "WiFi access point password"
+        default "pentaxhub"
+        help
+            WPA2 password for the access point (8-63 characters).
+            Leave empty for an open (unencrypted) network.
+
+    config PENTAXHUB_AP_CHANNEL
+        int "WiFi channel"
+        range 1 13
+        default 6
+
+    config PENTAXHUB_AP_MAX_CONN
+        int "Maximum simultaneous WiFi clients"
+        range 1 10
+        default 4
+
+    config PENTAXHUB_HTTP_PORT
+        int "HTTP server port"
+        default 80
+
+    config PENTAXHUB_USB_BULK_BUFFER_SIZE
+        int "USB bulk transfer buffer size (bytes)"
+        default 8192
+        range 512 32768
+        help
+            Size of the bulk IN/OUT transfer buffers used for PTP traffic
+            with the camera. Must be a multiple of 64. Larger values
+            reduce the number of USB transactions needed to move a photo
+            off the camera, at the cost of more internal RAM.
+
+    config PENTAXHUB_USB_DAEMON_TASK_PRIO
+        int "USB host library daemon task priority"
+        default 5
+
+endmenu

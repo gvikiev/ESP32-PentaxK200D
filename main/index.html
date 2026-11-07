@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>PentaxHub</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>PentaxHub <span class="sub">Pentax K200D remote</span></h1>
+  <div id="statusBadge" class="badge badge-unknown">checking…</div>
+</header>
+
+<main>
+  <section id="statusCard" class="card">
+    <div class="status-grid">
+      <div><span class="label">Camera</span><span id="camModel">–</span></div>
+      <div><span class="label">Serial</span><span id="camSerial">–</span></div>
+      <div><span class="label">Storage</span><span id="camStorage">–</span></div>
+    </div>
+    <p id="camError" class="error-text"></p>
+    <p id="camHint" class="hint-text"></p>
+  </section>
+
+  <section class="card">
+    <button id="captureBtn" class="btn btn-primary" disabled>Take photo</button>
+    <span id="captureStatus" class="hint-text"></span>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Photos</h2>
+      <button id="refreshBtn" class="btn btn-small">Refresh</button>
+    </div>
+    <div id="gallery" class="gallery"></div>
+    <button id="loadMoreBtn" class="btn btn-small" style="display:none">Load more</button>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Camera settings</h2>
+      <button id="propsRefreshBtn" class="btn btn-small">Refresh</button>
+    </div>
+    <div id="props" class="props-list"></div>
+  </section>
+</main>
+
+<div id="viewer" class="viewer hidden">
+  <div class="viewer-inner">
+    <button id="viewerClose" class="btn-icon" title="Close">×</button>
+    <img id="viewerImg" src="" alt="">
+    <div class="viewer-actions">
+      <a id="viewerDownload" class="btn btn-small" download>Download original</a>
+      <button id="viewerDelete" class="btn btn-small btn-danger">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

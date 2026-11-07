@@ -1,0 +1,151 @@
+:root {
+  --bg: #11151c;
+  --panel: #1a2029;
+  --panel-border: #2a3340;
+  --text: #e8edf4;
+  --muted: #8b97a8;
+  --accent: #4fa3ff;
+  --accent-text: #06111f;
+  --danger: #ff5c5c;
+  --ok: #3ddc84;
+  --warn: #ffb84f;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding-bottom: 2rem;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--panel-border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 10;
+}
+.topbar h1 { font-size: 1.15rem; margin: 0; }
+.topbar .sub { font-weight: 400; color: var(--muted); font-size: 0.85rem; display: block; }
+
+.badge {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.badge-ready { background: rgba(61,220,132,0.15); color: var(--ok); }
+.badge-busy { background: rgba(255,184,79,0.15); color: var(--warn); }
+.badge-bad { background: rgba(255,92,92,0.15); color: var(--danger); }
+.badge-unknown { background: rgba(139,151,168,0.15); color: var(--muted); }
+
+main {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+
+.card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+.card-head h2 { font-size: 1rem; margin: 0; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+.status-grid .label { display: block; color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.status-grid span:last-child { font-size: 1rem; }
+
+.error-text { color: var(--danger); font-size: 0.85rem; margin: 0.5rem 0 0; }
+.hint-text { color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0; }
+
+.btn {
+  background: var(--panel-border);
+  color: var(--text);
+  border: none;
+  border-radius: 8px;
+  padding: 0.6rem 1.1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.btn-small { padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+.btn-danger { background: rgba(255,92,92,0.2); color: var(--danger); }
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.thumb {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+  border: 1px solid var(--panel-border);
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .thumb-fallback { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 0.7rem; text-align: center; padding: 0.3rem; }
+
+.props-list { display: flex; flex-direction: column; gap: 0.6rem; }
+.prop-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.prop-row .prop-name { color: var(--muted); font-size: 0.85rem; flex: 1 1 140px; }
+.prop-row input, .prop-row select {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  max-width: 160px;
+}
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.viewer.hidden { display: none; }
+.viewer-inner { position: relative; max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
+.viewer-inner img { max-width: 94vw; max-height: 78vh; border-radius: 8px; }
+.viewer-actions { display: flex; gap: 0.6rem; }
+.btn-icon {
+  position: absolute;
+  top: -2.2rem;
+  right: 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+@media (max-width: 480px) {
+  .topbar h1 { font-size: 1rem; }
+}
