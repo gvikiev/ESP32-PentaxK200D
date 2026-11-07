@@ -103,6 +103,12 @@ idf.py -p PORT flash monitor
 | `main/ptp.h/.c` | PTP container format + wire helpers (no I/O). |
 | `main/ptp_transport.h/.c` | USB host plumbing: device enumeration, bulk/interrupt transfers, the generic PTP transaction engine. |
 | `main/camera.h/.c` | High level camera manager: session handling, object listing/streaming, capture, device properties. |
+| `main/bot.h/.c` | Stage 2: USB Mass Storage Bulk-Only Transport (CBW/CSW, stall + reset recovery). USB-stack independent (`bot_io_t`). |
+| `main/pentax_scsi.h/.c` | Stage 2: Pentax vendor SCSI (`F0 4F/24/26/49`) on top of BOT. |
+| `main/usb_msc_link.h/.c` | Stage 2: ESP-IDF USB Host binding that provides the BOT pipes. |
+| `main/photo_stream.h/.c` | Stage 2: bounded PSRAM block queue, USB reader -> HTTP sender. |
+| `main/pentax_service.h/.c` | Stage 2: camera service (capture, streamed download, delete). Enabled with `PENTAXHUB_BACKEND_PENTAX_SCSI`. |
+| `main/pentax_http.h/.c` | Stage 2: HTTP API (`/api/pentax/status`, `capture`, `photo` GET/DELETE) + WebSocket `/ws` progress. |
 | `main/wifi_ap.h/.c` | WiFi access point setup. |
 | `main/web_server.h/.c` | HTTP server: static UI + JSON/streaming API. |
 | `main/index.html`, `app.js`, `style.css` | The web UI (embedded into the firmware image). |

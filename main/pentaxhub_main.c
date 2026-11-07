@@ -22,6 +22,8 @@
 #include "wifi_ap.h"
 #include "camera.h"
 #include "web_server.h"
+#include "pentax_service.h"
+#include "pentax_http.h"
 
 static const char *TAG = "pentaxhub";
 
@@ -38,8 +40,16 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     ESP_ERROR_CHECK(wifi_ap_start());
+#if CONFIG_PENTAXHUB_BACKEND_PENTAX_SCSI
+    /* Stage 2: USB MSC/BOT + Pentax SCSI. Only one backend may own the USB
+     * host, so the PTP camera manager is not started in this configuration.
+     * It has its own HTTP/WebSocket front end (pentax_http.c). */
+    ESP_ERROR_CHECK(pentax_service_start(pentax_http_progress_cb, NULL));
+    ESP_ERROR_CHECK(pentax_http_start());
+#else
     ESP_ERROR_CHECK(camera_manager_start());
     ESP_ERROR_CHECK(web_server_start());
+#endif
 
     ESP_LOGI(TAG, "PentaxHub ready - connect to WiFi '%s' and open http://192.168.4.1/", CONFIG_PENTAXHUB_AP_SSID);
 }

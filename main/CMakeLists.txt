@@ -5,6 +5,12 @@ idf_component_register(
         "camera.c"
         "ptp.c"
         "ptp_transport.c"
+        "bot.c"
+        "pentax_scsi.c"
+        "usb_msc_link.c"
+        "photo_stream.c"
+        "pentax_service.c"
+        "pentax_http.c"
         "web_server.c"
     PRIV_REQUIRES
         esp_wifi
