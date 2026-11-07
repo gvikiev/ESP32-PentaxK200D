@@ -44,7 +44,7 @@ menu "PentaxHub Configuration"
 
     choice PENTAXHUB_BACKEND
         prompt "Camera protocol backend"
-        default PENTAXHUB_BACKEND_PTP
+        default PENTAXHUB_BACKEND_PENTAX_SCSI
         help
             PTP: original stage-1 backend (camera in [PictBridge] mode).
             Pentax SCSI: stage-2 backend, USB Mass Storage Bulk-Only
