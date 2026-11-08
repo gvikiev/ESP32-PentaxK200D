@@ -1,3 +1,4 @@
+
 #include "pentax_http.h"
 
 #include <stdio.h>
@@ -22,6 +23,8 @@ static const char *TAG = "pentax_http";
 static httpd_handle_t s_server;
 static SemaphoreHandle_t s_ws_lock;
 static int s_ws_fds[MAX_WS_CLIENTS];
+
+static uint32_t s_http_request_id;
 
 static const char INDEX_HTML[] =
     "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -187,8 +190,10 @@ static esp_err_t send_status(httpd_req_t *req)
 {
     pentax_status_summary_t st;
     pentax_service_get_status(&st);
+
     char buf[256];
     status_json(buf, sizeof(buf), &st);
+
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);
 }
@@ -198,8 +203,10 @@ static esp_err_t send_status(httpd_req_t *req)
 static void ws_add(int fd)
 {
     xSemaphoreTake(s_ws_lock, portMAX_DELAY);
+
     bool present = false;
     int free_i = -1;
+
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
         if (s_ws_fds[i] == fd) {
             present = true;
@@ -207,69 +214,119 @@ static void ws_add(int fd)
             free_i = i;
         }
     }
+
     if (!present && free_i >= 0) {
         s_ws_fds[free_i] = fd;
+        ESP_LOGI(TAG, "[WS] CONNECTED fd=%d slot=%d", fd, free_i);
+    } else if (present) {
+        ESP_LOGD(TAG, "[WS] fd=%d already registered", fd);
+    } else {
+        ESP_LOGW(TAG, "[WS] No free client slots for fd=%d", fd);
     }
+
     xSemaphoreGive(s_ws_lock);
 }
 
 static void ws_remove(int fd)
 {
+    bool removed = false;
+
     xSemaphoreTake(s_ws_lock, portMAX_DELAY);
+
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
         if (s_ws_fds[i] == fd) {
             s_ws_fds[i] = -1;
+            removed = true;
         }
     }
+
     xSemaphoreGive(s_ws_lock);
+
+    if (removed) {
+        ESP_LOGI(TAG, "[WS] DISCONNECTED fd=%d", fd);
+    }
 }
 
 static esp_err_t ws_handler(httpd_req_t *req)
 {
-    if (req->method == HTTP_GET) { /* handshake done */
-        ws_add(httpd_req_to_sockfd(req));
+    int fd = httpd_req_to_sockfd(req);
+
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(TAG, "[WS] HANDSHAKE fd=%d", fd);
+        ws_add(fd);
         return ESP_OK;
     }
-    httpd_ws_frame_t frame = { .type = HTTPD_WS_TYPE_TEXT };
+
+    httpd_ws_frame_t frame = {
+        .type = HTTPD_WS_TYPE_TEXT
+    };
+
     esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
+
     if (err != ESP_OK) {
-        ws_remove(httpd_req_to_sockfd(req));
+        ESP_LOGW(TAG, "[WS] RECEIVE FAILED fd=%d err=%s",
+                 fd, esp_err_to_name(err));
+        ws_remove(fd);
         return err;
     }
-    if (frame.len > 0 && frame.len <= 128) { /* clients send nothing we need; drain it */
+
+    if (frame.len > 0 && frame.len <= 128) {
         uint8_t tmp[129];
         frame.payload = tmp;
-        httpd_ws_recv_frame(req, &frame, frame.len);
+
+        err = httpd_ws_recv_frame(req, &frame, frame.len);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "[WS] FRAME DRAIN FAILED fd=%d err=%s",
+                     fd, esp_err_to_name(err));
+            ws_remove(fd);
+            return err;
+        }
     } else if (frame.len > 128) {
-        ws_remove(httpd_req_to_sockfd(req));
+        ESP_LOGW(TAG, "[WS] FRAME TOO LARGE fd=%d len=%u",
+                 fd, (unsigned)frame.len);
+        ws_remove(fd);
         return ESP_FAIL;
     }
+
     if (frame.type == HTTPD_WS_TYPE_CLOSE) {
-        ws_remove(httpd_req_to_sockfd(req));
+        ESP_LOGI(TAG, "[WS] CLOSE FRAME fd=%d", fd);
+        ws_remove(fd);
     }
+
     return ESP_OK;
 }
 
 void pentax_http_progress_cb(const pentax_status_summary_t *st, void *ctx)
 {
     (void)ctx;
+
     if (!s_server || !s_ws_lock) {
         return;
     }
+
     char buf[256];
     int n = status_json(buf, sizeof(buf), st);
+
     if (n <= 0 || n >= (int)sizeof(buf)) {
         return;
     }
+
     httpd_ws_frame_t frame = {
-        .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)buf, .len = (size_t)n,
+        .type = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)buf,
+        .len = (size_t)n,
     };
+
     xSemaphoreTake(s_ws_lock, portMAX_DELAY);
+
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-        if (s_ws_fds[i] >= 0 && httpd_ws_send_frame_async(s_server, s_ws_fds[i], &frame) != ESP_OK) {
+        if (s_ws_fds[i] >= 0 &&
+            httpd_ws_send_frame_async(s_server, s_ws_fds[i], &frame) != ESP_OK) {
+            ESP_LOGW(TAG, "[WS] SEND FAILED fd=%d", s_ws_fds[i]);
             s_ws_fds[i] = -1;
         }
     }
+
     xSemaphoreGive(s_ws_lock);
 }
 
@@ -277,92 +334,226 @@ void pentax_http_progress_cb(const pentax_status_summary_t *st, void *ctx)
 
 static esp_err_t index_handler(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "[HTTP] GET /");
+
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, INDEX_HTML, sizeof(INDEX_HTML) - 1);
 }
 
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    return send_status(req);
+    uint32_t id = ++s_http_request_id;
+
+    ESP_LOGI(TAG, "[HTTP #%lu] GET /api/pentax/status",
+             (unsigned long)id);
+
+    esp_err_t err = send_status(req);
+
+    ESP_LOGI(TAG, "[HTTP #%lu] STATUS RESPONSE -> %s",
+             (unsigned long)id, esp_err_to_name(err));
+
+    return err;
 }
 
 static esp_err_t capture_handler(httpd_req_t *req)
 {
+    uint32_t id = ++s_http_request_id;
+
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/capture START",
+             (unsigned long)id);
+
     esp_err_t err = pentax_service_capture(CAPTURE_TIMEOUT_MS);
+
     if (err != ESP_OK) {
-        httpd_resp_set_status(req, err == ESP_ERR_INVALID_STATE ? "409 Conflict" : "502 Bad Gateway");
+        ESP_LOGE(TAG, "[HTTP #%lu] CAPTURE FAILED: %s",
+                 (unsigned long)id, esp_err_to_name(err));
+
+        httpd_resp_set_status(req,
+            err == ESP_ERR_INVALID_STATE ? "409 Conflict" : "502 Bad Gateway");
+
         httpd_resp_set_type(req, "application/json");
+
         char buf[96];
-        snprintf(buf, sizeof(buf), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        snprintf(buf, sizeof(buf),
+                 "{\"ok\":false,\"error\":\"%s\"}",
+                 esp_err_to_name(err));
+
         return httpd_resp_sendstr(req, buf);
     }
+
+    ESP_LOGI(TAG, "[HTTP #%lu] CAPTURE SUCCESS",
+             (unsigned long)id);
+
     return send_status(req);
 }
 
 static esp_err_t photo_get_handler(httpd_req_t *req)
 {
+    uint32_t id = ++s_http_request_id;
+
+    ESP_LOGI(TAG, "[HTTP #%lu] GET /api/pentax/photo START",
+             (unsigned long)id);
+
     photo_stream_t *stream = NULL;
     esp_err_t err = pentax_service_download_start(&stream);
+
     if (err != ESP_OK) {
-        httpd_resp_send_err(req, err == ESP_ERR_INVALID_STATE ? HTTPD_400_BAD_REQUEST : HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "camera not ready");
+        ESP_LOGE(TAG, "[HTTP #%lu] DOWNLOAD START FAILED: %s",
+                 (unsigned long)id, esp_err_to_name(err));
+
+        httpd_resp_send_err(req,
+            err == ESP_ERR_INVALID_STATE
+                ? HTTPD_400_BAD_REQUEST
+                : HTTPD_500_INTERNAL_SERVER_ERROR,
+            "camera not ready");
+
         return ESP_OK;
     }
 
-    /* Wait for the first block before committing to a 200: the camera may have no photo. */
+    ESP_LOGI(TAG, "[HTTP #%lu] DOWNLOAD TASK STARTED",
+             (unsigned long)id);
+
+    /* Wait for the first block before committing to a 200 response. */
     ps_block_t blk;
     esp_err_t first = ps_next(stream, BLOCK_WAIT_MS, &blk);
+
     if (first != ESP_OK || (blk.eof && blk.err != ESP_OK)) {
         esp_err_t why = first != ESP_OK ? first : blk.err;
+
+        ESP_LOGE(TAG, "[HTTP #%lu] FIRST BLOCK FAILED: %s",
+                 (unsigned long)id, esp_err_to_name(why));
+
         if (first == ESP_OK) {
             ps_release(stream, &blk);
         }
+
         pentax_service_download_end(stream);
-        httpd_resp_send_err(req, why == ESP_ERR_NOT_FOUND ? HTTPD_404_NOT_FOUND : HTTPD_500_INTERNAL_SERVER_ERROR,
-                            why == ESP_ERR_NOT_FOUND ? "no photo in camera buffer" : "download failed");
+
+        httpd_resp_send_err(req,
+            why == ESP_ERR_NOT_FOUND
+                ? HTTPD_404_NOT_FOUND
+                : HTTPD_500_INTERNAL_SERVER_ERROR,
+            why == ESP_ERR_NOT_FOUND
+                ? "no photo in camera buffer"
+                : "download failed");
+
         return ESP_OK;
     }
 
     httpd_resp_set_type(req, "application/octet-stream");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"photo.bin\"");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"photo.bin\"");
 
     esp_err_t result = ESP_OK;
+    uint32_t total_sent = 0;
+
     for (;;) {
-        if (blk.len > 0 && httpd_resp_send_chunk(req, (const char *)blk.data, blk.len) != ESP_OK) {
-            result = ESP_FAIL; /* client went away */
+        if (blk.len > 0) {
+            esp_err_t send_err = httpd_resp_send_chunk(
+                req, (const char *)blk.data, blk.len);
+
+            if (send_err != ESP_OK) {
+                result = ESP_FAIL;
+
+                ESP_LOGW(TAG,
+                    "[HTTP #%lu] CLIENT SEND FAILED: %s",
+                    (unsigned long)id,
+                    esp_err_to_name(send_err));
+            } else {
+                total_sent += blk.len;
+            }
         }
+
         bool eof = blk.eof;
         esp_err_t producer_err = blk.err;
+
         ps_release(stream, &blk);
+
         if (result != ESP_OK) {
             break;
         }
+
         if (eof) {
             if (producer_err != ESP_OK) {
-                result = ESP_FAIL; /* truncated: close without the terminating chunk so the client sees an error */
+                result = ESP_FAIL;
+
+                ESP_LOGE(TAG,
+                    "[HTTP #%lu] DOWNLOAD PRODUCER FAILED: %s",
+                    (unsigned long)id,
+                    esp_err_to_name(producer_err));
             }
             break;
         }
-        if (ps_next(stream, BLOCK_WAIT_MS, &blk) != ESP_OK) {
+
+        esp_err_t next_err = ps_next(stream, BLOCK_WAIT_MS, &blk);
+
+        if (next_err != ESP_OK) {
             result = ESP_FAIL;
+
+            ESP_LOGE(TAG,
+                "[HTTP #%lu] WAIT NEXT BLOCK FAILED: %s",
+                (unsigned long)id,
+                esp_err_to_name(next_err));
+
             break;
         }
     }
-    pentax_service_download_end(stream); /* aborts + drains if we left early */
+
+    pentax_service_download_end(stream);
+
     if (result == ESP_OK) {
-        return httpd_resp_send_chunk(req, NULL, 0);
+        ESP_LOGI(TAG,
+            "[HTTP #%lu] DOWNLOAD COMPLETE: %lu bytes",
+            (unsigned long)id,
+            (unsigned long)total_sent);
+
+        esp_err_t end_err = httpd_resp_send_chunk(req, NULL, 0);
+
+        if (end_err != ESP_OK) {
+            ESP_LOGW(TAG,
+                "[HTTP #%lu] FINAL CHUNK FAILED: %s",
+                (unsigned long)id,
+                esp_err_to_name(end_err));
+        }
+
+        return end_err;
     }
-    ESP_LOGW(TAG, "photo transfer aborted");
+
+    ESP_LOGW(TAG,
+        "[HTTP #%lu] DOWNLOAD ABORTED: sent=%lu bytes",
+        (unsigned long)id,
+        (unsigned long)total_sent);
+
     return ESP_FAIL;
 }
 
 static esp_err_t photo_delete_handler(httpd_req_t *req)
 {
+    uint32_t id = ++s_http_request_id;
+
+    ESP_LOGW(TAG,
+        "[HTTP #%lu] DELETE /api/pentax/photo START",
+        (unsigned long)id);
+
     esp_err_t err = pentax_service_delete_photo();
+
     if (err != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "delete failed");
+        ESP_LOGE(TAG,
+            "[HTTP #%lu] DELETE FAILED: %s",
+            (unsigned long)id,
+            esp_err_to_name(err));
+
+        httpd_resp_send_err(req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "delete failed");
+
         return ESP_OK;
     }
+
+    ESP_LOGW(TAG,
+        "[HTTP #%lu] DELETE SUCCESS",
+        (unsigned long)id);
+
     return send_status(req);
 }
 
@@ -370,10 +561,15 @@ static esp_err_t photo_delete_handler(httpd_req_t *req)
 
 esp_err_t pentax_http_start(void)
 {
+    ESP_LOGI(TAG, "Starting Pentax HTTP server");
+
     s_ws_lock = xSemaphoreCreateMutex();
+
     if (!s_ws_lock) {
+        ESP_LOGE(TAG, "Failed to create WebSocket mutex");
         return ESP_ERR_NO_MEM;
     }
+
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
         s_ws_fds[i] = -1;
     }
@@ -386,7 +582,9 @@ esp_err_t pentax_http_start(void)
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
+
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -398,10 +596,16 @@ esp_err_t pentax_http_start(void)
         { .uri = "/api/pentax/photo",  .method = HTTP_DELETE, .handler = photo_delete_handler },
         { .uri = "/ws",                .method = HTTP_GET,    .handler = ws_handler, .is_websocket = true },
     };
+
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         ESP_ERROR_CHECK(httpd_register_uri_handler(server, &routes[i]));
     }
+
     s_server = server;
-    ESP_LOGI(TAG, "Pentax HTTP/WebSocket server on port %d", config.server_port);
+
+    ESP_LOGI(TAG,
+        "Pentax HTTP/WebSocket server started on port %d",
+        config.server_port);
+
     return ESP_OK;
 }
