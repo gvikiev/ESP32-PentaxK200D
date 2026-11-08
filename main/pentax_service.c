@@ -45,7 +45,7 @@
 #define SEG_DATA           3
 #define SEG_FILE_LEN       4
 #define MAX_SEGMENTS       256
-#define DL_CHUNK           32768u
+#define DL_CHUNK           8192u
 
 static const char *TAG = "pentax_service";
 
