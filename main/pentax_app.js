@@ -208,9 +208,45 @@ function selectSlot(slot) {
   selectedSlot = slot;
   document.getElementById('bufSelectedLabel').textContent = slot;
   document.getElementById('linkBufFull').href = API + '/photo?slot=' + slot + '&type=full';
-  document.getElementById('linkBufPreview').href = API + '/photo?slot=' + slot + '&type=preview';
+  clearPreview();
   if (lastStatus) renderBuffer(lastStatus.buffers || []);
 }
+
+/* ------------------------------------ buffer preview (graceful fallback) ------------- *
+ * Buffer type 8/9 (preview/thumbnail) is an unconfirmed format on real
+ * hardware (see docs/pentax_k200d_architecture_gemeni.md Фаза 0, H-11/H-18):
+ * it might not be something a browser's <img> can decode at all. Try to
+ * render it; if it fails, say so instead of leaving a dead link. */
+var curPreviewUrl = null;
+
+function clearPreview() {
+  var box = document.getElementById('previewBox');
+  var img = box.querySelector('img');
+  if (img) img.remove();
+  if (curPreviewUrl) { URL.revokeObjectURL(curPreviewUrl); curPreviewUrl = null; }
+  document.getElementById('previewMsg').hidden = false;
+  document.getElementById('previewMsg').textContent = 'Нет предпросмотра';
+}
+
+document.getElementById('btnBufPreview').onclick = function () {
+  var box = document.getElementById('previewBox');
+  var msg = document.getElementById('previewMsg');
+  clearPreview();
+  msg.textContent = 'Загрузка...';
+  fetch(API + '/photo?slot=' + selectedSlot + '&type=preview')
+    .then(function (r) { if (!r.ok) throw new Error('no preview'); return r.blob(); })
+    .then(function (blob) {
+      curPreviewUrl = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function () { msg.hidden = true; box.appendChild(img); };
+      img.onerror = function () {
+        msg.textContent = 'Предпросмотр недоступен: браузер не распознал формат буфера (не подтверждён на реальной камере).';
+        if (curPreviewUrl) { URL.revokeObjectURL(curPreviewUrl); curPreviewUrl = null; }
+      };
+      img.src = curPreviewUrl;
+    })
+    .catch(function () { msg.textContent = 'Нет снимка в этом слоте'; });
+};
 
 function renderSequence(seq) {
   var el = document.getElementById('seqProgress');

@@ -127,6 +127,9 @@
 
     <div class="card">
       <h3 class="card-title">Баланс белого <span class="badge badge-wo">write-only</span></h3>
+      <p class="stale-warning">Камера не отдаёт текущее значение в статусе: показано только то, что
+        отправлено отсюда. Если изменить баланс белого кольцом/меню на самой камере, здесь это
+        не отразится, пока не выставите значение через это приложение заново.</p>
       <div class="seg wrap" id="segWb">
         <button data-value="0">Auto</button><button data-value="1">Daylight</button><button data-value="2">Shade</button>
       </div>
@@ -141,6 +144,8 @@
 
     <div class="card">
       <h3 class="card-title">Вспышка <span class="badge badge-wo">write-only</span></h3>
+      <p class="stale-warning">Как и баланс белого, режим и компенсация вспышки не читаются обратно из
+        камеры &mdash; ручное изменение на корпусе камеры здесь не отобразится.</p>
       <div class="row2">
         <label>Режим <input type="number" id="flashMode" min="0" max="10" value="0"></label>
         <label>Компенсация EV <input type="number" id="flashEv" step="0.1" value="0"></label>
@@ -196,9 +201,14 @@
     </div>
     <div class="actions-row">
       <a class="btn" id="linkBufFull" href="#" download>Скачать полный</a>
-      <a class="btn secondary" id="linkBufPreview" href="#" target="_blank">Превью</a>
+      <button class="btn secondary" id="btnBufPreview">Превью</button>
       <button class="btn danger" id="btnBufDelete">Удалить</button>
     </div>
+    <div class="preview-box" id="previewBox">
+      <span id="previewMsg" class="hint">Нет предпросмотра</span>
+    </div>
+    <p class="hint">Формат буфера Preview/Thumbnail (тип 8/9) не подтверждён на реальной камере &mdash;
+      если браузер не сможет его показать, появится сообщение об этом вместо снимка.</p>
   </div>
 
   <div class="card">
