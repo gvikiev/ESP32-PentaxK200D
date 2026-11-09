@@ -24,7 +24,9 @@ extern "C" {
 
 /* Installs the USB Host Library and starts its library-event daemon task
  * the first time this is called; a no-op (returns ESP_OK) on every call
- * after that. Call this before usb_host_client_register(). */
+ * after that. Safe to call concurrently from different tasks/cores -- the
+ * two backends' init paths are not guaranteed to run sequentially. Call
+ * this before usb_host_client_register(). */
 esp_err_t usb_host_shared_acquire(void);
 
 #ifdef __cplusplus

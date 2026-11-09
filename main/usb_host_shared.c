@@ -2,6 +2,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "usb/usb_host.h"
 
@@ -11,6 +12,8 @@
 
 static const char *TAG = "usb_host_shared";
 static bool s_installed;
+static SemaphoreHandle_t s_mutex;
+static portMUX_TYPE s_mutex_init_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void lib_task(void *arg)
 {
@@ -23,27 +26,39 @@ static void lib_task(void *arg)
 
 esp_err_t usb_host_shared_acquire(void)
 {
-    /* Called only from app_main() (sequentially, by both backends' start
-     * functions), so a plain flag is enough -- no concurrent callers. */
-    if (s_installed) {
-        return ESP_OK;
+    /* camera_manager_start() hands PTP init off to a task on core 1 and
+     * returns immediately, while pentax_service_start() calls into the SCSI
+     * backend synchronously on core 0 -- so both backends can genuinely call
+     * this at the same time. A mutex (not a plain flag) is what actually
+     * serializes them; the spinlock here only guards the mutex's own
+     * one-time, lazy creation. */
+    portENTER_CRITICAL(&s_mutex_init_lock);
+    if (!s_mutex) {
+        s_mutex = xSemaphoreCreateMutex();
     }
-
-    usb_host_config_t host_cfg = {
-        .skip_phy_setup = false,
-        .intr_flags = ESP_INTR_FLAG_LEVEL1,
-    };
-    esp_err_t err = usb_host_install(&host_cfg);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    if (xTaskCreatePinnedToCore(lib_task, "usb_lib", 4096, NULL,
-                                 CONFIG_PENTAXHUB_USB_DAEMON_TASK_PRIO, NULL, 0) != pdPASS) {
+    portEXIT_CRITICAL(&s_mutex_init_lock);
+    if (!s_mutex) {
         return ESP_ERR_NO_MEM;
     }
 
-    s_installed = true;
-    ESP_LOGI(TAG, "USB Host Library installed");
-    return ESP_OK;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    if (!s_installed) {
+        usb_host_config_t host_cfg = {
+            .skip_phy_setup = false,
+            .intr_flags = ESP_INTR_FLAG_LEVEL1,
+        };
+        err = usb_host_install(&host_cfg);
+        if (err == ESP_OK) {
+            if (xTaskCreatePinnedToCore(lib_task, "usb_lib", 4096, NULL,
+                                         CONFIG_PENTAXHUB_USB_DAEMON_TASK_PRIO, NULL, 0) != pdPASS) {
+                err = ESP_ERR_NO_MEM;
+            } else {
+                s_installed = true;
+                ESP_LOGI(TAG, "USB Host Library installed");
+            }
+        }
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
 }
