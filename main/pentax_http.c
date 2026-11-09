@@ -170,6 +170,32 @@ static const char INDEX_HTML[] =
 
 /* --------------------------------- helpers ---------------------------------- */
 
+static esp_err_t read_body(httpd_req_t *req, char *buf, size_t cap)
+{
+    if (req->content_len <= 0 || (size_t)req->content_len >= cap) {
+        return ESP_FAIL;
+    }
+    size_t total = 0;
+    while (total < (size_t)req->content_len) {
+        int r = httpd_req_recv(req, buf + total, req->content_len - total);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (r <= 0) {
+            return ESP_FAIL;
+        }
+        total += (size_t)r;
+    }
+    buf[total] = '\0';
+    return ESP_OK;
+}
+
+static int json_get_int(const cJSON *obj, const char *key, int def)
+{
+    cJSON *v = obj ? cJSON_GetObjectItem(obj, key) : NULL;
+    return cJSON_IsNumber(v) ? v->valueint : def;
+}
+
 static const char *state_str(pentax_state_t s)
 {
     switch (s) {
@@ -275,6 +301,38 @@ static cJSON *build_params(const k200d_status_t *fs)
     return p;
 }
 
+/* Last value we told the camera for a write-only parameter (no field in
+ * [00 08] reflects these back; see pentax_service_get_writeonly_cache()). */
+static cJSON *build_write_only(const pentax_writeonly_cache_t *wo)
+{
+    cJSON *w = cJSON_CreateObject();
+
+    cJSON *wb = cJSON_AddObjectToObject(w, "white_balance");
+    cJSON_AddBoolToObject(wb, "set", wo->wb_set);
+    cJSON_AddNumberToObject(wb, "mode", wo->wb_mode);
+
+    cJSON *wbt = cJSON_AddObjectToObject(w, "wb_tuning");
+    cJSON_AddBoolToObject(wbt, "set", wo->wb_tune_set);
+    cJSON_AddNumberToObject(wbt, "mode", wo->wb_tune_mode);
+    cJSON_AddNumberToObject(wbt, "mg", wo->wb_mg);
+    cJSON_AddNumberToObject(wbt, "ba", wo->wb_ba);
+
+    cJSON *ae = cJSON_AddObjectToObject(w, "ae_metering");
+    cJSON_AddBoolToObject(ae, "set", wo->ae_metering_set);
+    cJSON_AddNumberToObject(ae, "mode", wo->ae_metering_mode);
+
+    cJSON *fm = cJSON_AddObjectToObject(w, "flash_mode");
+    cJSON_AddBoolToObject(fm, "set", wo->flash_mode_set);
+    cJSON_AddNumberToObject(fm, "mode", wo->flash_mode);
+
+    cJSON *fe = cJSON_AddObjectToObject(w, "flash_ev_comp");
+    cJSON_AddBoolToObject(fe, "set", wo->flash_ev_comp_set);
+    cJSON_AddNumberToObject(fe, "nom", wo->flash_ev_comp_nom);
+    cJSON_AddNumberToObject(fe, "denom", wo->flash_ev_comp_denom);
+
+    return w;
+}
+
 /* GET /api/pentax/status: summary + live camera parameters + capability
  * matrix. Capture/delete responses keep using the lighter send_status()
  * above so a write action isn't slowed down by an extra 408-byte read. */
@@ -286,6 +344,9 @@ static esp_err_t send_full_status(httpd_req_t *req)
     k200d_status_t fs;
     bool fs_ok = (pentax_service_get_full_status(&fs) == ESP_OK);
 
+    pentax_writeonly_cache_t wo;
+    pentax_service_get_writeonly_cache(&wo);
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "state", state_str(st.state));
     cJSON_AddNumberToObject(root, "buffer_mask", st.buffer_mask);
@@ -296,6 +357,7 @@ static esp_err_t send_full_status(httpd_req_t *req)
     if (fs_ok) {
         cJSON_AddItemToObject(root, "params", build_params(&fs));
     }
+    cJSON_AddItemToObject(root, "write_only", build_write_only(&wo));
     cJSON_AddItemToObject(root, "capabilities", build_capabilities());
 
     char *out = cJSON_PrintUnformatted(root);
@@ -670,6 +732,91 @@ static esp_err_t photo_delete_handler(httpd_req_t *req)
     return send_status(req);
 }
 
+static esp_err_t param_post_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+
+    char body[160];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too large or missing");
+        return ESP_OK;
+    }
+
+    cJSON *in = cJSON_Parse(body);
+    cJSON *jparam = in ? cJSON_GetObjectItem(in, "param") : NULL;
+    const char *param = cJSON_IsString(jparam) ? jparam->valuestring : NULL;
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+
+    if (param) {
+        if (!strcmp(param, "shutter_speed")) {
+            err = pentax_service_set_shutter_speed((uint32_t)json_get_int(in, "nom", 0),
+                                                    (uint32_t)json_get_int(in, "denom", 0));
+        } else if (!strcmp(param, "aperture")) {
+            err = pentax_service_set_aperture((uint32_t)json_get_int(in, "nom", 0),
+                                               (uint32_t)json_get_int(in, "denom", 0));
+        } else if (!strcmp(param, "iso")) {
+            err = pentax_service_set_iso((uint32_t)json_get_int(in, "value", 0),
+                                          (uint32_t)json_get_int(in, "auto_min", 0),
+                                          (uint32_t)json_get_int(in, "auto_max", 0));
+        } else if (!strcmp(param, "ev_comp")) {
+            err = pentax_service_set_ev_comp(json_get_int(in, "nom", 0), json_get_int(in, "denom", 1));
+        } else if (!strcmp(param, "exposure_mode")) {
+            err = pentax_service_set_exposure_mode((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "file_format")) {
+            err = pentax_service_set_file_format((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "jpeg_quality")) {
+            err = pentax_service_set_jpeg_quality((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "jpeg_resolution")) {
+            err = pentax_service_set_jpeg_resolution((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "raw_format")) {
+            err = pentax_service_set_raw_format((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "custom_image_tone")) {
+            err = pentax_service_set_custom_image_tone((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "af_mode")) {
+            err = pentax_service_set_af_mode((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "af_area")) {
+            err = pentax_service_set_af_area((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "af_point")) {
+            err = pentax_service_set_af_point((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "drive_mode")) {
+            err = pentax_service_set_drive_mode((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "white_balance")) {
+            err = pentax_service_set_white_balance((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "wb_tuning")) {
+            err = pentax_service_set_wb_tuning((uint32_t)json_get_int(in, "mode", 0),
+                                                json_get_int(in, "mg", 0), json_get_int(in, "ba", 0));
+        } else if (!strcmp(param, "ae_metering")) {
+            err = pentax_service_set_ae_metering((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "flash_mode")) {
+            err = pentax_service_set_flash_mode((uint32_t)json_get_int(in, "value", 0));
+        } else if (!strcmp(param, "flash_ev_comp")) {
+            err = pentax_service_set_flash_ev_comp(json_get_int(in, "nom", 0), json_get_int(in, "denom", 1));
+        } else {
+            err = ESP_ERR_NOT_SUPPORTED;
+        }
+    }
+
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/param '%s' -> %s",
+             (unsigned long)id, param ? param : "?", esp_err_to_name(err));
+
+    if (in) {
+        cJSON_Delete(in);
+    }
+
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req,
+            err == ESP_ERR_INVALID_ARG    ? "400 Bad Request" :
+            err == ESP_ERR_NOT_SUPPORTED  ? "404 Not Found" :
+            err == ESP_ERR_INVALID_STATE  ? "409 Conflict" : "502 Bad Gateway");
+        httpd_resp_set_type(req, "application/json");
+        char buf[96];
+        snprintf(buf, sizeof(buf), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        return httpd_resp_sendstr(req, buf);
+    }
+
+    return send_full_status(req);
+}
+
 /* ----------------------------------- start ------------------------------------ */
 
 esp_err_t pentax_http_start(void)
@@ -705,6 +852,7 @@ esp_err_t pentax_http_start(void)
         { .uri = "/",                  .method = HTTP_GET,    .handler = index_handler },
         { .uri = "/api/pentax/status", .method = HTTP_GET,    .handler = status_handler },
         { .uri = "/api/pentax/capture",.method = HTTP_POST,   .handler = capture_handler },
+        { .uri = "/api/pentax/param",  .method = HTTP_POST,   .handler = param_post_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_GET,    .handler = photo_get_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_DELETE, .handler = photo_delete_handler },
         { .uri = "/ws",                .method = HTTP_GET,    .handler = ws_handler, .is_websocket = true },

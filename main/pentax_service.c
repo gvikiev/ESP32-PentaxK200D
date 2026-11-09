@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
+#include "nvs.h"
 
 #include "usb_msc_link.h"
 #include "bot.h"
@@ -25,11 +26,13 @@
 #define CONFIG_PENTAXHUB_PENTAX_BUF_RES 0
 #endif
 
-/* Pentax command groups/numbers (see docs/REFERENCES.md). */
+/* Pentax command groups/numbers (see docs/REFERENCES.md and
+ * docs/pentax_k200d_architecture_gemeni.md section 2.3). */
 #define G_SYS 0x00
 #define C_SET_CONNECT_MODE 0x00
 #define C_GET_STATUS       0x01
 #define C_GET_FULL_STATUS  0x08
+#define C_DSP_WU_REQ       0x09
 #define G_ACT 0x10
 #define C_SHUTTER          0x05
 #define G_BUF 0x02
@@ -41,6 +44,29 @@
 #define C_SEG_NEXT         0x01
 #define G_DL  0x06
 #define C_DL_PREPARE       0x00
+
+/* Parameter group: every command here must be framed with
+ * DSPTaskWUReq(1) before and DSPTaskWUReq(2) after (see write_param_locked). */
+#define G_PARAM 0x18
+#define C_EXPOSURE_MODE    0x01
+#define C_AE_METERING      0x03
+#define C_FLASH_MODE       0x04
+#define C_AF_MODE          0x05
+#define C_AF_AREA          0x06
+#define C_AF_POINT         0x07
+#define C_WHITE_BALANCE    0x10
+#define C_WB_TUNING        0x11
+#define C_FILE_FORMAT      0x12
+#define C_JPEG_QUALITY     0x13
+#define C_JPEG_RESOLUTION  0x14
+#define C_ISO              0x15
+#define C_SHUTTER_SPEED    0x16
+#define C_APERTURE         0x17
+#define C_EV_COMP          0x18
+#define C_FLASH_EV_COMP    0x1A
+#define C_CUSTOM_IMAGE     0x1B
+#define C_DRIVE_MODE       0x1C
+#define C_RAW_FORMAT       0x1F
 
 #define SEG_LAST           2
 #define SEG_DATA           3
@@ -65,6 +91,85 @@ static void *s_cb_ctx;
 
 static k200d_status_t s_full_status;
 static bool s_full_status_valid;
+
+static pentax_writeonly_cache_t s_wo_cache;
+
+/* ------------------------- write-only parameter cache -------------------------- *
+ * WB, WB tuning, AE metering, flash mode and flash EV comp have no field in
+ * the [00 08] status buffer (see docs/pentax_k200d_architecture_gemeni.md
+ * section 2.2), so the only record of "what did we last tell the camera" is
+ * what the ESP32 itself remembers. Persisted in NVS so a reboot doesn't lose
+ * it (the camera's own setting survives; only our UI's memory of it would
+ * otherwise be forgotten). */
+#define WO_NVS_NAMESPACE "pentax_wo"
+
+static void wo_cache_load(void)
+{
+    memset(&s_wo_cache, 0, sizeof(s_wo_cache));
+    nvs_handle_t h;
+    if (nvs_open(WO_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return; /* namespace not created yet: nothing has ever been written */
+    }
+    uint32_t u32v;
+    int32_t i32v;
+    if (nvs_get_u32(h, "wb_mode", &u32v) == ESP_OK) {
+        s_wo_cache.wb_mode = u32v;
+        s_wo_cache.wb_set = true;
+    }
+    if (nvs_get_u32(h, "wbt_mode", &u32v) == ESP_OK && nvs_get_i32(h, "wbt_mg", &i32v) == ESP_OK) {
+        s_wo_cache.wb_tune_mode = u32v;
+        s_wo_cache.wb_mg = i32v;
+        if (nvs_get_i32(h, "wbt_ba", &i32v) == ESP_OK) {
+            s_wo_cache.wb_ba = i32v;
+            s_wo_cache.wb_tune_set = true;
+        }
+    }
+    if (nvs_get_u32(h, "ae_meter", &u32v) == ESP_OK) {
+        s_wo_cache.ae_metering_mode = u32v;
+        s_wo_cache.ae_metering_set = true;
+    }
+    if (nvs_get_u32(h, "flash_mode", &u32v) == ESP_OK) {
+        s_wo_cache.flash_mode = u32v;
+        s_wo_cache.flash_mode_set = true;
+    }
+    if (nvs_get_i32(h, "flash_ev_n", &i32v) == ESP_OK) {
+        s_wo_cache.flash_ev_comp_nom = i32v;
+        if (nvs_get_i32(h, "flash_ev_d", &i32v) == ESP_OK) {
+            s_wo_cache.flash_ev_comp_denom = i32v;
+            s_wo_cache.flash_ev_comp_set = true;
+        }
+    }
+    nvs_close(h);
+}
+
+static void wo_cache_put_u32(const char *key, uint32_t value)
+{
+    nvs_handle_t h;
+    if (nvs_open(WO_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_u32(h, key, value);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void wo_cache_put_i32(const char *key, int32_t value)
+{
+    nvs_handle_t h;
+    if (nvs_open(WO_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_i32(h, key, value);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void pentax_service_get_writeonly_cache(pentax_writeonly_cache_t *out)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_wo_cache;
+    xSemaphoreGive(s_mutex);
+}
 
 /* ---------------------------------- status ----------------------------------- */
 
@@ -194,6 +299,373 @@ esp_err_t pentax_service_get_full_status(k200d_status_t *out)
     }
     *out = s_full_status;
     return s_full_status_valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+/* ------------------------------- parameter writes ------------------------------ *
+ * Every [18 xx] write is framed with DSPTaskWUReq ([00 09], flag 1 before,
+ * flag 2 after) and, where the written field also appears in the [00 08]
+ * status buffer, followed by a best-effort read-back so the cache the HTTP
+ * layer serves is current. A mismatch between what we sent and what the
+ * camera reports back is logged, not treated as a failure: the write
+ * command's own Pentax status byte (via pentax_status_to_err()) is already
+ * the authoritative success/failure signal, and some fields may simply be
+ * encoded/rounded differently than we assume (see docs/pentax_k200d_architecture_gemeni.md
+ * section 2.2 for the fields flagged there as unconfirmed). */
+
+/* Call with s_mutex held. */
+static esp_err_t write_param_locked(uint8_t cmd, const uint32_t *args, size_t nargs)
+{
+    esp_err_t err = ensure_session();
+    if (err != ESP_OK) {
+        return err;
+    }
+    uint32_t pre = 1;
+    err = pentax_scsi_exec(&s_scsi, G_SYS, C_DSP_WU_REQ, &pre, 1, NULL, 0, NULL, NULL, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = pentax_scsi_exec(&s_scsi, G_PARAM, cmd, args, nargs, NULL, 0, NULL, NULL, NULL);
+    uint32_t post = 2;
+    esp_err_t post_err = pentax_scsi_exec(&s_scsi, G_SYS, C_DSP_WU_REQ, &post, 1, NULL, 0, NULL, NULL, NULL);
+    return (err != ESP_OK) ? err : post_err;
+}
+
+/* Takes s_mutex, writes the parameter and (on success) refreshes the full
+ * status cache, then releases s_mutex. `what` is used for error/log text. */
+static esp_err_t set_param_and_verify(const char *what, uint8_t cmd, const uint32_t *args, size_t nargs)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = write_param_locked(cmd, args, nargs);
+    if (err != ESP_OK) {
+        set_error(what, err);
+        s_session_open = false; /* force re-handshake after a failure */
+    } else if (fetch_full_status_locked() != ESP_OK) {
+        ESP_LOGW(TAG, "%s: write accepted but post-write status refresh failed", what);
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+/* Takes s_mutex, writes the parameter and (on success, while still holding
+ * s_mutex) calls update_cache(ctx) -- used by the write-only parameters
+ * below to update their NVS-backed cache, since there is no [00 08] field
+ * to read back and refresh from. Always balances the lock itself, even if
+ * it timed out before acquiring it (the caller never has to). */
+typedef void (*wo_cache_update_fn)(void *ctx);
+
+static esp_err_t write_param_cached(const char *what, uint8_t cmd, const uint32_t *args, size_t nargs,
+                                     wo_cache_update_fn update_cache, void *ctx)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = write_param_locked(cmd, args, nargs);
+    if (err != ESP_OK) {
+        set_error(what, err);
+        s_session_open = false;
+    } else if (update_cache) {
+        update_cache(ctx);
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t pentax_service_set_shutter_speed(uint32_t nom, uint32_t denom)
+{
+    if (nom == 0 || denom == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    double seconds = (double)nom / (double)denom;
+    if (seconds < (1.0 / 4000.0) - 1e-9 || seconds > 30.0 + 1e-9) {
+        return ESP_ERR_INVALID_ARG; /* K200D range: 1/4000s .. 30s */
+    }
+    uint32_t args[2] = { nom, denom };
+    esp_err_t err = set_param_and_verify("shutter_speed", C_SHUTTER_SPEED, args, 2);
+    if (err == ESP_OK && (s_full_status.set_shutter_nom != nom || s_full_status.set_shutter_denom != denom)) {
+        ESP_LOGW(TAG, "shutter_speed: wrote %u/%u, camera reports %u/%u", (unsigned)nom, (unsigned)denom,
+                 (unsigned)s_full_status.set_shutter_nom, (unsigned)s_full_status.set_shutter_denom);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_aperture(uint32_t nom, uint32_t denom)
+{
+    if (denom == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    double f = (double)nom / (double)denom;
+    /* Validate against the attached lens's own range when known; otherwise
+     * fall back to the K200D body's widest documented range (F1.0-F32). */
+    double f_min = 1.0, f_max = 32.0;
+    if (s_full_status_valid && s_full_status.lens_max_aperture_denom != 0 && s_full_status.lens_min_aperture_denom != 0) {
+        f_min = (double)s_full_status.lens_max_aperture_nom / s_full_status.lens_max_aperture_denom;
+        f_max = (double)s_full_status.lens_min_aperture_nom / s_full_status.lens_min_aperture_denom;
+    }
+    if (f < f_min - 0.05 || f > f_max + 0.05) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[3] = { nom, denom, 0 };
+    esp_err_t err = set_param_and_verify("aperture", C_APERTURE, args, 3);
+    if (err == ESP_OK && (s_full_status.set_aperture_nom != nom || s_full_status.set_aperture_denom != denom)) {
+        ESP_LOGW(TAG, "aperture: wrote %u/%u, camera reports %u/%u", (unsigned)nom, (unsigned)denom,
+                 (unsigned)s_full_status.set_aperture_nom, (unsigned)s_full_status.set_aperture_denom);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_iso(uint32_t iso, uint32_t auto_min, uint32_t auto_max)
+{
+    if (iso < 100 || iso > 1600) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((auto_min != 0 && (auto_min < 100 || auto_min > 1600)) ||
+        (auto_max != 0 && (auto_max < 100 || auto_max > 1600)) ||
+        (auto_min != 0 && auto_max != 0 && auto_min > auto_max)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[3] = { iso, auto_min, auto_max };
+    esp_err_t err = set_param_and_verify("iso", C_ISO, args, 3);
+    if (err == ESP_OK && s_full_status.iso != iso) {
+        ESP_LOGW(TAG, "iso: wrote %u, camera reports %u", (unsigned)iso, (unsigned)s_full_status.iso);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_ev_comp(int32_t nom, int32_t denom)
+{
+    if (denom == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    double ev = (double)nom / (double)denom;
+    if (ev < -3.0 - 1e-9 || ev > 3.0 + 1e-9) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[2] = { (uint32_t)nom, (uint32_t)denom };
+    esp_err_t err = set_param_and_verify("ev_comp", C_EV_COMP, args, 2);
+    if (err == ESP_OK && (s_full_status.ev_comp_nom != nom || s_full_status.ev_comp_denom != denom)) {
+        ESP_LOGW(TAG, "ev_comp: wrote %d/%d, camera reports %d/%d", (int)nom, (int)denom,
+                 (int)s_full_status.ev_comp_nom, (int)s_full_status.ev_comp_denom);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_exposure_mode(uint32_t mode)
+{
+    /* Encoding not confirmed on real hardware (see architecture doc section
+     * 2.2); passed through as given, with a leading 1 per the command table. */
+    uint32_t args[2] = { 1, mode };
+    esp_err_t err = set_param_and_verify("exposure_mode", C_EXPOSURE_MODE, args, 2);
+    if (err == ESP_OK && s_full_status.exposure_mode != mode) {
+        ESP_LOGW(TAG, "exposure_mode: wrote %u, camera reports %u", (unsigned)mode, (unsigned)s_full_status.exposure_mode);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_file_format(uint32_t format)
+{
+    if (format > 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[2] = { 1, format };
+    esp_err_t err = set_param_and_verify("file_format", C_FILE_FORMAT, args, 2);
+    if (err == ESP_OK && s_full_status.image_format != format) {
+        ESP_LOGW(TAG, "file_format: wrote %u, camera reports %u", (unsigned)format, (unsigned)s_full_status.image_format);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_jpeg_quality(uint32_t stars)
+{
+    if (stars < 1 || stars > 3) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t hw = 3u - stars;
+    uint32_t args[2] = { 1, hw };
+    esp_err_t err = set_param_and_verify("jpeg_quality", C_JPEG_QUALITY, args, 2);
+    if (err == ESP_OK && s_full_status.jpeg_stars != stars) {
+        ESP_LOGW(TAG, "jpeg_quality: wrote %u stars, camera reports %u", (unsigned)stars, (unsigned)s_full_status.jpeg_stars);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_jpeg_resolution(uint32_t res_idx)
+{
+    if (res_idx > 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[2] = { 1, res_idx };
+    esp_err_t err = set_param_and_verify("jpeg_resolution", C_JPEG_RESOLUTION, args, 2);
+    if (err == ESP_OK && s_full_status.jpeg_res_idx != res_idx) {
+        ESP_LOGW(TAG, "jpeg_resolution: wrote %u, camera reports %u", (unsigned)res_idx, (unsigned)s_full_status.jpeg_res_idx);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_raw_format(uint32_t format)
+{
+    if (format > 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[2] = { 1, format };
+    esp_err_t err = set_param_and_verify("raw_format", C_RAW_FORMAT, args, 2);
+    if (err == ESP_OK && s_full_status.raw_format != format) {
+        ESP_LOGW(TAG, "raw_format: wrote %u, camera reports %u", (unsigned)format, (unsigned)s_full_status.raw_format);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_custom_image_tone(uint32_t tone)
+{
+    if (tone > 5) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[1] = { tone };
+    esp_err_t err = set_param_and_verify("custom_image_tone", C_CUSTOM_IMAGE, args, 1);
+    if (err == ESP_OK && s_full_status.custom_image_tone != tone) {
+        ESP_LOGW(TAG, "custom_image_tone: wrote %u, camera reports %u", (unsigned)tone, (unsigned)s_full_status.custom_image_tone);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_af_mode(uint32_t mode)
+{
+    if (mode != 1 && mode != 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[1] = { mode };
+    esp_err_t err = set_param_and_verify("af_mode", C_AF_MODE, args, 1);
+    if (err == ESP_OK && s_full_status.af_mode != mode) {
+        ESP_LOGW(TAG, "af_mode: wrote %u, camera reports %u", (unsigned)mode, (unsigned)s_full_status.af_mode);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_af_area(uint32_t sel)
+{
+    if (sel > 3) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[1] = { sel };
+    esp_err_t err = set_param_and_verify("af_area", C_AF_AREA, args, 1);
+    if (err == ESP_OK && s_full_status.af_area_select != sel) {
+        ESP_LOGW(TAG, "af_area: wrote %u, camera reports %u", (unsigned)sel, (unsigned)s_full_status.af_area_select);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_af_point(uint32_t point_mask)
+{
+    if (point_mask > 0x7FFu) {
+        return ESP_ERR_INVALID_ARG; /* 11 AF points */
+    }
+    uint32_t args[1] = { point_mask };
+    esp_err_t err = set_param_and_verify("af_point", C_AF_POINT, args, 1);
+    if (err == ESP_OK && s_full_status.af_point_mask != point_mask) {
+        ESP_LOGW(TAG, "af_point: wrote 0x%03x, camera reports 0x%03x", (unsigned)point_mask, (unsigned)s_full_status.af_point_mask);
+    }
+    return err;
+}
+
+esp_err_t pentax_service_set_drive_mode(uint32_t mode)
+{
+    /* No upper bound: the architecture doc's enum for this field is
+     * explicitly partial ("0: Single, 1: Cont.Hi, 2: Self-Timer..."). */
+    uint32_t args[1] = { mode };
+    esp_err_t err = set_param_and_verify("drive_mode", C_DRIVE_MODE, args, 1);
+    if (err == ESP_OK && s_full_status.drive_mode != mode) {
+        ESP_LOGW(TAG, "drive_mode: wrote %u, camera reports %u", (unsigned)mode, (unsigned)s_full_status.drive_mode);
+    }
+    return err;
+}
+
+static void wo_update_wb(void *ctx)
+{
+    uint32_t mode = *(uint32_t *)ctx;
+    s_wo_cache.wb_mode = mode;
+    s_wo_cache.wb_set = true;
+    wo_cache_put_u32("wb_mode", mode);
+}
+
+esp_err_t pentax_service_set_white_balance(uint32_t mode)
+{
+    uint32_t args[1] = { mode };
+    return write_param_cached("white_balance", C_WHITE_BALANCE, args, 1, wo_update_wb, &mode);
+}
+
+typedef struct { uint32_t mode; int32_t mg, ba; } wb_tuning_ctx_t;
+
+static void wo_update_wb_tuning(void *ctx)
+{
+    wb_tuning_ctx_t *c = ctx;
+    s_wo_cache.wb_tune_mode = c->mode;
+    s_wo_cache.wb_mg = c->mg;
+    s_wo_cache.wb_ba = c->ba;
+    s_wo_cache.wb_tune_set = true;
+    wo_cache_put_u32("wbt_mode", c->mode);
+    wo_cache_put_i32("wbt_mg", c->mg);
+    wo_cache_put_i32("wbt_ba", c->ba);
+}
+
+esp_err_t pentax_service_set_wb_tuning(uint32_t mode, int32_t mg, int32_t ba)
+{
+    uint32_t args[3] = { mode, (uint32_t)mg, (uint32_t)ba };
+    wb_tuning_ctx_t ctx = { mode, mg, ba };
+    return write_param_cached("wb_tuning", C_WB_TUNING, args, 3, wo_update_wb_tuning, &ctx);
+}
+
+static void wo_update_ae_metering(void *ctx)
+{
+    uint32_t mode = *(uint32_t *)ctx;
+    s_wo_cache.ae_metering_mode = mode;
+    s_wo_cache.ae_metering_set = true;
+    wo_cache_put_u32("ae_meter", mode);
+}
+
+esp_err_t pentax_service_set_ae_metering(uint32_t mode)
+{
+    if (mode > 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[1] = { mode };
+    return write_param_cached("ae_metering", C_AE_METERING, args, 1, wo_update_ae_metering, &mode);
+}
+
+static void wo_update_flash_mode(void *ctx)
+{
+    uint32_t mode = *(uint32_t *)ctx;
+    s_wo_cache.flash_mode = mode;
+    s_wo_cache.flash_mode_set = true;
+    wo_cache_put_u32("flash_mode", mode);
+}
+
+esp_err_t pentax_service_set_flash_mode(uint32_t mode)
+{
+    uint32_t args[1] = { mode };
+    return write_param_cached("flash_mode", C_FLASH_MODE, args, 1, wo_update_flash_mode, &mode);
+}
+
+typedef struct { int32_t nom, denom; } flash_ev_ctx_t;
+
+static void wo_update_flash_ev(void *ctx)
+{
+    flash_ev_ctx_t *c = ctx;
+    s_wo_cache.flash_ev_comp_nom = c->nom;
+    s_wo_cache.flash_ev_comp_denom = c->denom;
+    s_wo_cache.flash_ev_comp_set = true;
+    wo_cache_put_i32("flash_ev_n", c->nom);
+    wo_cache_put_i32("flash_ev_d", c->denom);
+}
+
+esp_err_t pentax_service_set_flash_ev_comp(int32_t nom, int32_t denom)
+{
+    if (denom == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t args[2] = { (uint32_t)nom, (uint32_t)denom };
+    flash_ev_ctx_t ctx = { nom, denom };
+    return write_param_cached("flash_ev_comp", C_FLASH_EV_COMP, args, 2, wo_update_flash_ev, &ctx);
 }
 
 /* -------------------------------- capture ------------------------------------ */
@@ -461,5 +933,6 @@ esp_err_t pentax_service_start(pentax_progress_cb_t cb, void *ctx)
         return ESP_ERR_NO_MEM;
     }
     s_status.state = PS_STATE_DISCONNECTED;
+    wo_cache_load();
     return usb_msc_link_init(link_cb, NULL);
 }

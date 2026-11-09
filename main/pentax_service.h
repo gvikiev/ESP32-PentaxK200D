@@ -44,6 +44,47 @@ void pentax_service_get_status(pentax_status_summary_t *out);
  * full status has ever been parsed yet (camera never connected). */
 esp_err_t pentax_service_get_full_status(k200d_status_t *out);
 
+/* Parameter writes ([18 xx], see docs/pentax_k200d_architecture_gemeni.md
+ * section 2.3). Each is framed with DSPTaskWUReq internally. Returns
+ * ESP_ERR_INVALID_ARG if the value is outside the range the architecture
+ * doc documents for the K200D, ESP_ERR_TIMEOUT if the USB link was busy,
+ * or the Pentax status byte mapped through pentax_status_to_err() for a
+ * write the camera itself rejected. A successful write best-effort
+ * refreshes the cache pentax_service_get_full_status() returns. */
+esp_err_t pentax_service_set_shutter_speed(uint32_t nom, uint32_t denom);
+esp_err_t pentax_service_set_aperture(uint32_t nom, uint32_t denom);
+esp_err_t pentax_service_set_iso(uint32_t iso, uint32_t auto_min, uint32_t auto_max);
+esp_err_t pentax_service_set_ev_comp(int32_t nom, int32_t denom);
+esp_err_t pentax_service_set_exposure_mode(uint32_t mode);
+esp_err_t pentax_service_set_file_format(uint32_t format);        /* 0:JPEG 1:RAW 2:RAW+JPEG */
+esp_err_t pentax_service_set_jpeg_quality(uint32_t stars);        /* 1..3 */
+esp_err_t pentax_service_set_jpeg_resolution(uint32_t res_idx);   /* 0:10M 1:6M 2:2M */
+esp_err_t pentax_service_set_raw_format(uint32_t format);         /* 0:PEF 1:DNG */
+esp_err_t pentax_service_set_custom_image_tone(uint32_t tone);    /* 0..5 */
+esp_err_t pentax_service_set_af_mode(uint32_t mode);              /* 1:AF.S 2:AF.C */
+esp_err_t pentax_service_set_af_area(uint32_t sel);               /* 0:Auto-5 1:Select 2:Spot 3:Auto-11 */
+esp_err_t pentax_service_set_af_point(uint32_t point_mask);       /* 11-bit mask */
+esp_err_t pentax_service_set_drive_mode(uint32_t mode);
+
+/* Write-only on the K200D: no field in [00 08] reflects these back, so the
+ * value passed is cached (and persisted in NVS) and echoed back by
+ * pentax_service_get_writeonly_cache() instead of a status read-back. */
+esp_err_t pentax_service_set_white_balance(uint32_t mode);
+esp_err_t pentax_service_set_wb_tuning(uint32_t mode, int32_t mg, int32_t ba);
+esp_err_t pentax_service_set_ae_metering(uint32_t mode);          /* 0:Multi 1:Center 2:Spot */
+esp_err_t pentax_service_set_flash_mode(uint32_t mode);
+esp_err_t pentax_service_set_flash_ev_comp(int32_t nom, int32_t denom);
+
+typedef struct {
+    bool wb_set;            uint32_t wb_mode;
+    bool wb_tune_set;        uint32_t wb_tune_mode; int32_t wb_mg, wb_ba;
+    bool ae_metering_set;    uint32_t ae_metering_mode;
+    bool flash_mode_set;     uint32_t flash_mode;
+    bool flash_ev_comp_set;  int32_t flash_ev_comp_nom, flash_ev_comp_denom;
+} pentax_writeonly_cache_t;
+
+void pentax_service_get_writeonly_cache(pentax_writeonly_cache_t *out);
+
 /* Half-press + full-press, then waits until a photo appears in the camera's
  * buffer or timeout_ms elapses. */
 esp_err_t pentax_service_capture(uint32_t timeout_ms);
