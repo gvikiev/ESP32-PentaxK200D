@@ -9,9 +9,12 @@ camera:
   in -- no rebuild, reflash or reboot needed to switch:
   - **`[PC]` (Pentax vendor SCSI over USB Mass Storage)** -- the primary,
     far more capable mode: full exposure/image-quality/AF parameter
-    control, shutter/AF/green-button/dust-removal/bulb, all 10 RAM buffer
-    slots, and (unverified on real hardware) read-only SD card browsing.
-    See `docs/pentax_k200d_architecture_gemeni.md` for the protocol.
+    control, shutter/AF/green-button/dust-removal/bulb, an intervalometer
+    and exposure bracketing, all 10 RAM buffer slots, OTA firmware
+    updates, and (unverified on real hardware) read-only SD card
+    browsing. See `docs/pentax_k200d_architecture_gemeni.md` for the
+    protocol and `docs/pentax_k200d_web_ui_specification.md` for the
+    dashboard this backend's web UI is built from.
   - **`[PictBridge]` (standard PTP)** -- browsing/downloading photos
     already on the card; whether the K200D's PictBridge firmware answers
     `InitiateCapture` for remote shutter release is not confirmed.
@@ -110,6 +113,8 @@ idf.py -p PORT flash monitor
 - No on-board storage: photo downloads/thumbnails are streamed straight
   from the camera through the ESP32-S3 to the browser, nothing is cached
   on the device.
+- `POST /api/ota` has no authentication beyond the WiFi AP password;
+  anyone on the `PentaxHub` network can reflash the device.
 
 ## Code layout
 
@@ -127,6 +132,8 @@ idf.py -p PORT flash monitor
 | `main/pentax_sd.h/.c` | Read-only FatFs access to the SD card over standard SCSI `READ(10)`. |
 | `main/pentax_service.h/.c` | Camera service: parameters, actions, RAM buffer download/delete, SD passthrough. |
 | `main/pentax_http.h/.c` | HTTP API (`/api/pentax/*`, `/api/sd/*`) + WebSocket `/ws` progress. |
+| `main/pentax_index.html`, `pentax_app.js`, `pentax_style.css` | This backend's dashboard (embedded into the firmware image). |
+| `main/ota_http.h/.c` | `POST /api/ota`: streams a firmware image into `esp_ota_write()` and reboots. Shared by both backends. |
 | **`[PictBridge]` / PTP backend** | |
 | `main/ptp.h/.c` | PTP container format + wire helpers (no I/O). |
 | `main/ptp_transport.h/.c` | USB host plumbing: device enumeration, bulk/interrupt transfers, the generic PTP transaction engine. |

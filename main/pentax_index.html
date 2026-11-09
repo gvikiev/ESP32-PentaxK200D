@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Pentax K200D Dashboard</title>
+<link rel="stylesheet" href="/pentax/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="stateDot"></span>
+    <div class="brand-text">
+      <b>PENTAX</b> <span>K200D &middot; PentaxHub</span>
+    </div>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="camera">Камера</button>
+    <button class="tab" data-tab="buffer">Буфер и SD</button>
+    <button class="tab" data-tab="about">О системе</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ============================== CAMERA TAB ============================== -->
+<section class="panel active" data-panel="camera">
+
+  <div class="card banner" id="disconnectedBanner" hidden>
+    <div class="banner-icon">&#128247;</div>
+    <h3>Подключите камеру по USB и включите её</h3>
+    <p class="hint">Переведите [USB Connection] в меню камеры в режим [PC] для полного управления.</p>
+  </div>
+
+  <div class="card banner warn" id="wrongModeBanner" hidden>
+    <div class="banner-icon">&#9888;</div>
+    <h3>Камера в режиме [PictBridge]</h3>
+    <p>Для управления съёмкой переключите: <b>MENU &rarr; Set-up &rarr; USB Connection &rarr; [PC]</b></p>
+  </div>
+
+  <div id="cameraReady" hidden>
+
+    <div class="card" id="errRow" hidden>
+      <span class="badge badge-bad">Ошибка</span>
+      <span id="errText"></span>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Объектив</h3>
+      <div class="lens-grid">
+        <div><span class="lcd-label">Фокусное расстояние</span><span class="lcd-value" id="lensFocal">&mdash;</span></div>
+        <div><span class="lcd-label">Диапазон диафрагмы</span><span class="lcd-value" id="lensAperture">&mdash;</span></div>
+        <div><span class="lcd-label">Стабилизация (SR)</span><span class="lcd-value" id="lensSR">&mdash;</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Экспозиция</h3>
+      <div class="exposure-values">
+        <button class="stepbtn" data-param="shutter_speed" data-dir="-1">&minus;</button>
+        <div class="expval"><span class="lcd-label">Выдержка</span><span class="lcd-value" id="valShutter">&mdash;</span></div>
+        <button class="stepbtn" data-param="shutter_speed" data-dir="1">+</button>
+
+        <button class="stepbtn" data-param="aperture" data-dir="-1">&minus;</button>
+        <div class="expval"><span class="lcd-label">Диафрагма</span><span class="lcd-value" id="valAperture">&mdash;</span></div>
+        <button class="stepbtn" data-param="aperture" data-dir="1">+</button>
+
+        <button class="stepbtn" data-param="iso" data-dir="-1">&minus;</button>
+        <div class="expval"><span class="lcd-label">ISO</span><span class="lcd-value" id="valIso">&mdash;</span></div>
+        <button class="stepbtn" data-param="iso" data-dir="1">+</button>
+
+        <button class="stepbtn" data-param="ev_comp" data-dir="-1">&minus;</button>
+        <div class="expval"><span class="lcd-label">EV</span><span class="lcd-value" id="valEv">&mdash;</span></div>
+        <button class="stepbtn" data-param="ev_comp" data-dir="1">+</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Файл <span class="badge badge-ok">available</span></h3>
+      <div class="seg" id="segFormat">
+        <button data-value="0">JPEG</button><button data-value="1">RAW</button><button data-value="2">RAW+JPEG</button>
+      </div>
+      <div class="row2">
+        <div>
+          <div class="lcd-label">Тип RAW</div>
+          <div class="seg" id="segRawType"><button data-value="0">PEF</button><button data-value="1">DNG</button></div>
+        </div>
+        <div>
+          <div class="lcd-label">Разрешение JPEG</div>
+          <div class="seg" id="segJpegRes"><button data-value="0">10M</button><button data-value="1">6M</button><button data-value="2">2M</button></div>
+        </div>
+      </div>
+      <div class="lcd-label">Качество (звёзды)</div>
+      <div class="seg" id="segStars"><button data-value="1">&#9733;</button><button data-value="2">&#9733;&#9733;</button><button data-value="3">&#9733;&#9733;&#9733;</button></div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Изображение <span class="badge badge-exp">experimental</span></h3>
+      <div class="lcd-label">Custom Image</div>
+      <div class="seg wrap" id="segCustomImage">
+        <button data-value="0">Bright</button><button data-value="1">Natural</button><button data-value="2">Portrait</button>
+        <button data-value="3">Landscape</button><button data-value="4">Vibrant</button><button data-value="5">Mono</button>
+      </div>
+      <div class="sliders">
+        <label>Saturation <input type="range" min="-4" max="4" step="1" id="sldSat" disabled></label>
+        <label>Sharpness <input type="range" min="-4" max="4" step="1" id="sldSharp" disabled></label>
+        <label>Contrast <input type="range" min="-4" max="4" step="1" id="sldContrast" disabled></label>
+        <label>Hue <input type="range" min="-4" max="4" step="1" id="sldHue" disabled></label>
+      </div>
+      <p class="hint">Saturation/Sharpness/Contrast/Hue показаны только для чтения: протокол камеры
+        для их записи (SCSI [18 20]..[18 25]) документирован не полностью &mdash; см. README.</p>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Фокус и замер</h3>
+      <div class="lcd-label">Режим AF</div>
+      <div class="seg" id="segAfMode"><button data-value="1">AF.S</button><button data-value="2">AF.C</button></div>
+      <div class="lcd-label">Зона AF</div>
+      <div class="seg wrap" id="segAfArea"><button data-value="0">Auto-5</button><button data-value="1">Select</button><button data-value="2">Spot</button><button data-value="3">Auto-11</button></div>
+      <div class="lcd-label">Точки AF</div>
+      <div class="af-grid" id="afGrid"></div>
+      <div class="lcd-label">Замер <span class="badge badge-wo">write-only</span></div>
+      <div class="seg" id="segMetering"><button data-value="0">Multi</button><button data-value="1">Center</button><button data-value="2">Spot</button></div>
+      <div class="lcd-label">Протяжка (Drive)</div>
+      <div class="seg wrap" id="segDrive"><button data-value="0">Single</button><button data-value="1">Cont.Hi</button><button data-value="2">Self-Timer</button></div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Баланс белого <span class="badge badge-wo">write-only</span></h3>
+      <div class="seg wrap" id="segWb">
+        <button data-value="0">Auto</button><button data-value="1">Daylight</button><button data-value="2">Shade</button>
+      </div>
+      <p class="hint">Остальные режимы камеры (Cloudy/Fluorescent/Tungsten/...) задокументированы не полностью
+        (архитектурный документ, раздел 2.3) &mdash; задайте код режима вручную, если знаете его.</p>
+      <div class="row2">
+        <label>Код режима <input type="number" id="wbModeManual" min="0" max="19" value="0"></label>
+        <button class="btn secondary" id="btnWbManualApply">Применить</button>
+      </div>
+      <div id="wbNote" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Вспышка <span class="badge badge-wo">write-only</span></h3>
+      <div class="row2">
+        <label>Режим <input type="number" id="flashMode" min="0" max="10" value="0"></label>
+        <label>Компенсация EV <input type="number" id="flashEv" step="0.1" value="0"></label>
+      </div>
+      <button class="btn secondary" id="btnFlashApply">Применить</button>
+    </div>
+
+    <div class="card actions-card">
+      <h3 class="card-title">Спуск и фокусировка</h3>
+      <div class="actions-row">
+        <button class="btn" id="btnAf">&#127919; AF</button>
+        <button class="btn shutter-big" id="btnRelease">&#128247; СПУСК</button>
+      </div>
+      <div class="actions-row">
+        <button class="btn secondary" id="btnGreen">&#128994; Зелёная кнопка</button>
+        <button class="btn secondary" id="btnDust">&#129529; Очистка матрицы</button>
+      </div>
+      <div class="row2">
+        <label>Bulb, сек <input type="number" id="bulbSeconds" min="1" max="600" value="30"></label>
+        <button class="btn secondary" id="btnBulb">&#9201; Старт Bulb</button>
+      </div>
+      <div class="row2">
+        <label>Tether <input type="checkbox" id="tetherCheck" checked></label>
+        <span class="hint">физическое подключение к камере ([10 0A])</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Серии (интервалометр / брекетинг)</h3>
+      <div id="seqProgress" class="hint"></div>
+      <div class="row2">
+        <label>Кадров <input type="number" id="intervalCount" min="1" max="999" value="10"></label>
+        <label>Пауза, сек <input type="number" id="intervalSeconds" min="0" max="3600" value="5"></label>
+      </div>
+      <button class="btn secondary" id="btnIntervalStart">Старт интервалометра</button>
+      <div class="row2" style="margin-top:.6em">
+        <label style="flex:1">EV-брекетинг (через запятую) <input type="text" id="bracketEvs" value="-1,0,1"></label>
+      </div>
+      <button class="btn secondary" id="btnBracketStart">Старт брекетинга</button>
+      <button class="btn danger" id="btnSeqStop">Остановить серию</button>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================== BUFFER / SD TAB ============================== -->
+<section class="panel" data-panel="buffer">
+  <div class="card">
+    <h3 class="card-title">RAM-буфер камеры (10 слотов)</h3>
+    <div class="buf-grid" id="bufGrid"></div>
+    <div class="row2">
+      <span class="lcd-label">Выбран слот: <b id="bufSelectedLabel">0</b></span>
+    </div>
+    <div class="actions-row">
+      <a class="btn" id="linkBufFull" href="#" download>Скачать полный</a>
+      <a class="btn secondary" id="linkBufPreview" href="#" target="_blank">Превью</a>
+      <button class="btn danger" id="btnBufDelete">Удалить</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">SD-карта <span class="badge" id="sdBadge">unavailable</span></h3>
+    <div class="hint">🔶 Не подтверждено на реальной камере (гипотеза H-1).</div>
+    <div class="sd-breadcrumb" id="sdBreadcrumb"></div>
+    <div class="sd-list" id="sdList"></div>
+  </div>
+</section>
+
+<!-- ============================== ABOUT TAB ============================== -->
+<section class="panel" data-panel="about">
+  <div class="card">
+    <h3 class="card-title">О системе</h3>
+    <div class="lcd-label">Состояние</div>
+    <pre id="rawStatus" class="raw-status"></pre>
+  </div>
+  <div class="card">
+    <h3 class="card-title">Обновление прошивки (OTA)</h3>
+    <p class="hint">Загрузите файл .bin, собранный из этого проекта. Без аутентификации &mdash; доверяйте только своей сети.</p>
+    <input type="file" id="otaFile" accept=".bin">
+    <button class="btn secondary" id="btnOtaUpload">Загрузить и перезагрузить</button>
+    <div id="otaStatus" class="hint"></div>
+  </div>
+</section>
+
+</main>
+<footer>PentaxHub (ESP32-S3) &middot; Pentax K200D &middot; Pentax SCSI backend</footer>
+<script src="/pentax/app.js"></script>
+</body>
+</html>

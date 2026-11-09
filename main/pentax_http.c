@@ -31,144 +31,30 @@ static int s_ws_fds[MAX_WS_CLIENTS];
 
 static uint32_t s_http_request_id;
 
-static const char INDEX_HTML[] =
-    "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>PentaxHub K200D</title>"
-    "<style>"
-    ":root{--bg:#15171a;--panel:#1e2125;--panel2:#24282d;--edge:#34383e;--accent:#1c63d6;--accent-d:#123e8c;"
-    "--text:#eef0f2;--muted:#8b919b;--warn:#e0a438;--bad:#d9453a;--lcd-bg:#c6cdb0;--lcd-fg:#262b1d;--lcd-dim:#8a9077}"
-    "*{box-sizing:border-box}"
-    "[hidden]{display:none!important}"
-    "body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif;min-height:100vh}"
-    "header{display:flex;align-items:center;justify-content:space-between;gap:.5em;padding:.8em 1em;"
-    "background:linear-gradient(var(--panel2),var(--panel));border-bottom:2px solid var(--edge)}"
-    ".brand{display:flex;align-items:baseline;gap:.5em}"
-    ".brand b{color:var(--accent);font-size:1.3em;letter-spacing:.06em}"
-    ".brand span{color:var(--muted);font-size:.85em}"
-    "nav{display:flex;gap:.4em}"
-    "nav button{background:var(--panel2);color:var(--muted);border:1px solid var(--edge);border-radius:999px;"
-    "padding:.5em 1.1em;font-size:.95em;cursor:pointer}"
-    "nav button.active{background:var(--accent);color:#fff;border-color:var(--accent)}"
-    "main{max-width:30em;margin:0 auto;padding:1.2em 1em 2em}"
-    "section{display:none}"
-    "section.active{display:block}"
-    ".card{background:var(--panel);border:1px solid var(--edge);border-radius:.8em;padding:1em;margin-bottom:1em}"
-    ".lcd{background:var(--lcd-bg);color:var(--lcd-fg);border-radius:.4em;padding:.8em 1em;"
-    "font-family:Consolas,Menlo,monospace;border:3px solid #3a3e32;box-shadow:inset 0 0 8px rgba(0,0,0,.35)}"
-    ".lcd-row{display:flex;justify-content:space-between;padding:.15em 0}"
-    ".lcd-row.err{color:var(--bad)}"
-    ".lcd-label{color:var(--lcd-dim);font-size:.8em;text-transform:uppercase;letter-spacing:.08em}"
-    ".lcd-value{font-weight:bold}"
-    ".state-busy .lcd-value{color:var(--warn)}"
-    ".state-bad .lcd-value{color:var(--bad)}"
-    ".progress-wrap{margin-top:.7em}"
-    "progress{width:100%;height:.6em;accent-color:var(--accent)}"
-    "#progText{font-size:.8em;color:var(--muted)}"
-    ".shutter{display:block;margin:1.4em auto;width:5.5em;height:5.5em;border-radius:50%;"
-    "background:radial-gradient(circle at 35% 30%,#3a3d42,#17191c 70%);border:4px solid var(--edge);"
-    "position:relative;cursor:pointer}"
-    ".shutter::after{content:'';position:absolute;inset:.5em;border-radius:50%;background:var(--bad);"
-    "box-shadow:inset 0 0 0 3px #00000033}"
-    ".shutter:disabled{opacity:.4;cursor:not-allowed}"
-    ".shutter:disabled::after{background:#555}"
-    ".hint{color:var(--muted);font-size:.85em;text-align:center;line-height:1.4}"
-    ".leds{display:flex;gap:.5em;justify-content:center;margin-bottom:1em}"
-    ".led{width:1.4em;height:1.4em;border-radius:.3em;background:var(--panel2);border:1px solid var(--edge)}"
-    ".led.on{background:var(--accent);box-shadow:0 0 .5em var(--accent)}"
-    ".preview{background:#000;border:1px solid var(--edge);border-radius:.6em;min-height:12em;"
-    "display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:1em}"
-    ".preview img{max-width:100%;max-height:22em;display:block}"
-    ".preview span{color:var(--muted);font-size:.85em;padding:1em;text-align:center}"
-    ".actions{display:flex;gap:.6em;flex-wrap:wrap}"
-    ".btn{flex:1;text-align:center;background:var(--accent);color:#fff;border:none;border-radius:.5em;"
-    "padding:.7em;font-size:.95em;cursor:pointer;text-decoration:none}"
-    ".btn.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--edge)}"
-    ".btn.danger{background:var(--bad)}"
-    ".btn.is-disabled{opacity:.4;pointer-events:none}"
-    "footer{text-align:center;color:var(--muted);font-size:.8em;padding:1em}"
-    "</style>"
-    "<header><div class=brand><b>PENTAX</b><span>K200D &middot; PentaxHub</span></div>"
-    "<nav><button class='tab active' data-t=camera>Камера</button><button class=tab data-t=photos>Снимки</button></nav>"
-    "</header>"
-    "<main>"
-    "<section id=camera class=active>"
-    "<div class='card lcd' id=lcd>"
-    "<div class=lcd-row><span class=lcd-label>Статус</span><span id=stState class=lcd-value>&mdash;</span></div>"
-    "<div class=lcd-row><span class=lcd-label>Буфер камеры</span><span id=stBuf class=lcd-value>&mdash;</span></div>"
-    "<div class='lcd-row err' id=errRow hidden><span class=lcd-label>Ошибка</span><span id=errText class=lcd-value></span></div>"
-    "<div class=progress-wrap id=progWrap hidden><progress id=prog value=0 max=1></progress>"
-    "<div id=progText>0 / 0 байт</div></div>"
-    "</div>"
-    "<button id=shutter class=shutter title='Спуск затвора'></button>"
-    "<p class=hint>Удалённый спуск затвора по USB.<br>Live View и видеосъёмка камерой K200D не поддерживаются.</p>"
-    "</section>"
-    "<section id=photos>"
-    "<div class=card>"
-    "<div class=leds id=leds></div>"
-    "<div class=preview id=preview><span id=previewMsg>Нет предпросмотра</span></div>"
-    "<div class=actions>"
-    "<button id=btnShow class=btn>Показать снимок</button>"
-    "<a id=btnDownload class='btn secondary' href=/api/pentax/photo download=photo.bin>Скачать</a>"
-    "<button id=btnDelete class='btn danger'>Удалить с камеры</button>"
-    "</div>"
-    "<p class=hint>Снимок хранится в буфере камеры. Предпросмотр загружает файл целиком и недоступен для RAW (PEF).</p>"
-    "</div>"
-    "</section>"
-    "</main>"
-    "<footer>PentaxHub (ESP32-S3) &middot; Pentax K200D &middot; USB SCSI backend</footer>"
-    "<script>"
-    "var tabs=document.querySelectorAll('.tab'),secs=document.querySelectorAll('section');"
-    "tabs.forEach(function(t){t.onclick=function(){tabs.forEach(function(x){x.classList.remove('active')});"
-    "secs.forEach(function(s){s.classList.remove('active')});t.classList.add('active');"
-    "document.getElementById(t.dataset.t).classList.add('active')}});"
-    "var lcd=document.getElementById('lcd'),stState=document.getElementById('stState'),stBuf=document.getElementById('stBuf'),"
-    "errRow=document.getElementById('errRow'),errText=document.getElementById('errText'),"
-    "progWrap=document.getElementById('progWrap'),prog=document.getElementById('prog'),progText=document.getElementById('progText'),"
-    "shutter=document.getElementById('shutter'),leds=document.getElementById('leds'),"
-    "btnShow=document.getElementById('btnShow'),btnDownload=document.getElementById('btnDownload'),btnDelete=document.getElementById('btnDelete'),"
-    "preview=document.getElementById('preview'),previewMsg=document.getElementById('previewMsg');"
-    "for(var i=0;i<4;i++){var d=document.createElement('div');d.className='led';leds.appendChild(d)}"
-    "var STATE_RU={ready:'Готова',busy:'Съёмка/передача',wrong_usb_mode:'Неверный режим USB',disconnected:'Камера не подключена'};"
-    "function renderStatus(st){"
-    "stState.textContent=STATE_RU[st.state]||st.state;"
-    "lcd.classList.remove('state-busy','state-bad');"
-    "if(st.state=='busy')lcd.classList.add('state-busy');"
-    "if(st.state=='wrong_usb_mode'||st.state=='disconnected')lcd.classList.add('state-bad');"
-    "var n=0;for(var i=0;i<4;i++){var on=!!(st.buffer_mask&(1<<i));"
-    "leds.children[i].classList.toggle('on',on);if(on)n++}"
-    "stBuf.textContent=n?n+' снимок(ов)':'пусто';"
-    "var hasPhoto=st.buffer_mask!=0;"
-    "btnShow.classList.toggle('is-disabled',!hasPhoto);"
-    "btnDownload.classList.toggle('is-disabled',!hasPhoto);"
-    "btnDelete.classList.toggle('is-disabled',!hasPhoto);"
-    "shutter.disabled=(st.state!='ready');"
-    "if(st.last_error){errRow.hidden=false;errText.textContent=st.last_error}else{errRow.hidden=true}"
-    "if(st.state=='busy'&&st.bytes_total>0){progWrap.hidden=false;prog.max=st.bytes_total;prog.value=st.bytes_done;"
-    "progText.textContent=st.bytes_done+' / '+st.bytes_total+' байт'}else{progWrap.hidden=true}"
-    "}"
-    "function fetchStatus(){fetch('/api/pentax/status').then(function(r){return r.json()}).then(renderStatus).catch(function(){})}"
-    "shutter.onclick=function(){shutter.disabled=true;fetch('/api/pentax/capture',{method:'POST'}).then(function(r){return r.json()})"
-    ".then(function(j){if(j.state)renderStatus(j);else{errRow.hidden=false;errText.textContent=j.error||'Ошибка съёмки'}})"
-    ".catch(function(){}).then(fetchStatus)};"
-    "btnDelete.onclick=function(){if(btnDelete.classList.contains('is-disabled'))return;"
-    "if(!confirm('Удалить снимок из буфера камеры?'))return;"
-    "fetch('/api/pentax/photo',{method:'DELETE'}).then(function(r){return r.ok?r.json():null})"
-    ".then(function(j){if(j)renderStatus(j)}).catch(function(){}).then(fetchStatus)};"
-    "var curUrl=null;"
-    "btnShow.onclick=function(){if(btnShow.classList.contains('is-disabled'))return;"
-    "previewMsg.textContent='Загрузка...';previewMsg.style.display='block';"
-    "var img=preview.querySelector('img');if(img)img.remove();"
-    "fetch('/api/pentax/photo').then(function(r){if(!r.ok)throw 0;return r.blob()}).then(function(b){"
-    "if(curUrl)URL.revokeObjectURL(curUrl);curUrl=URL.createObjectURL(b);"
-    "var im=new Image();im.onload=function(){previewMsg.style.display='none';preview.appendChild(im)};"
-    "im.onerror=function(){previewMsg.textContent='Предпросмотр недоступен (вероятно RAW/PEF)'};"
-    "im.src=curUrl}).catch(function(){previewMsg.textContent='Нет снимка в буфере камеры'})};"
-    "var ws,wsTimer;"
-    "function connectWs(){try{ws=new WebSocket('ws://'+location.host+'/ws')}catch(e){return}"
-    "ws.onmessage=function(e){try{renderStatus(JSON.parse(e.data))}catch(e){}};"
-    "ws.onclose=function(){clearTimeout(wsTimer);wsTimer=setTimeout(connectWs,3000)}}"
-    "fetchStatus();connectWs();setInterval(fetchStatus,8000);"
-    "</script>";
+/* Embedded static UI assets (see main/CMakeLists.txt EMBED_FILES); the
+ * dashboard built for docs/pentax_k200d_web_ui_specification.md. */
+extern const uint8_t pentax_index_html_start[] asm("_binary_pentax_index_html_start");
+extern const uint8_t pentax_index_html_end[]   asm("_binary_pentax_index_html_end");
+extern const uint8_t pentax_app_js_start[] asm("_binary_pentax_app_js_start");
+extern const uint8_t pentax_app_js_end[]   asm("_binary_pentax_app_js_end");
+extern const uint8_t pentax_style_css_start[] asm("_binary_pentax_style_css_start");
+extern const uint8_t pentax_style_css_end[]   asm("_binary_pentax_style_css_end");
+
+static esp_err_t send_binary(httpd_req_t *req, const char *type, const uint8_t *start, const uint8_t *end)
+{
+    httpd_resp_set_type(req, type);
+    return httpd_resp_send(req, (const char *)start, end - start);
+}
+
+static esp_err_t app_js_handler(httpd_req_t *req)
+{
+    return send_binary(req, "application/javascript", pentax_app_js_start, pentax_app_js_end);
+}
+
+static esp_err_t style_css_handler(httpd_req_t *req)
+{
+    return send_binary(req, "text/css", pentax_style_css_start, pentax_style_css_end);
+}
 
 /* --------------------------------- helpers ---------------------------------- */
 
@@ -298,10 +184,13 @@ static cJSON *build_capabilities(bool sd_mounted)
     cJSON_AddStringToObject(c, "jpeg_resolution", "available");
     cJSON_AddStringToObject(c, "raw_format", "available");
     cJSON_AddStringToObject(c, "custom_image_tone", "experimental");
-    cJSON_AddStringToObject(c, "saturation", "experimental");
-    cJSON_AddStringToObject(c, "sharpness", "experimental");
-    cJSON_AddStringToObject(c, "contrast", "experimental");
-    cJSON_AddStringToObject(c, "jpeg_hue", "experimental");
+    /* The architecture doc documents [18 20]..[18 25] for these ("hw_val =
+     * val + 4") without confirming which sub-code maps to which field, so
+     * no setter is implemented (see pentax_service.c) -- read-only here. */
+    cJSON_AddStringToObject(c, "saturation", "read_only");
+    cJSON_AddStringToObject(c, "sharpness", "read_only");
+    cJSON_AddStringToObject(c, "contrast", "read_only");
+    cJSON_AddStringToObject(c, "jpeg_hue", "read_only");
     cJSON_AddStringToObject(c, "af_mode", "available");
     cJSON_AddStringToObject(c, "af_area", "available");
     cJSON_AddStringToObject(c, "af_point", "available");
@@ -579,9 +468,7 @@ void pentax_http_progress_cb(const pentax_status_summary_t *st, void *ctx)
 esp_err_t pentax_http_index_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "[HTTP] GET / (pentax)");
-
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, INDEX_HTML, sizeof(INDEX_HTML) - 1);
+    return send_binary(req, "text/html", pentax_index_html_start, pentax_index_html_end);
 }
 
 static esp_err_t status_handler(httpd_req_t *req)
@@ -1255,6 +1142,8 @@ esp_err_t pentax_http_register(httpd_handle_t server)
     }
 
     static const httpd_uri_t routes[] = {
+        { .uri = "/pentax/app.js",     .method = HTTP_GET,    .handler = app_js_handler },
+        { .uri = "/pentax/style.css",  .method = HTTP_GET,    .handler = style_css_handler },
         { .uri = "/api/pentax/status", .method = HTTP_GET,    .handler = status_handler },
         { .uri = "/api/pentax/capture",.method = HTTP_POST,   .handler = capture_handler },
         { .uri = "/api/pentax/af",     .method = HTTP_POST,   .handler = af_handler },

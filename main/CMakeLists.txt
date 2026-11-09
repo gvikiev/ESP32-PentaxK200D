@@ -28,4 +28,5 @@ idf_component_register(
         app_update
     INCLUDE_DIRS "."
     EMBED_FILES "index.html" "app.js" "style.css"
+        "pentax_index.html" "pentax_app.js" "pentax_style.css"
 )

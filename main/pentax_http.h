@@ -6,7 +6,8 @@
  * decides which one actually has a camera to talk to (see
  * docs/pentax_k200d_architecture_gemeni.md section 5.1).
  *
- *   GET    /                            minimal control page (pentax_http_index_handler)
+ *   GET    /                            dashboard page (pentax_http_index_handler)
+ *   GET    /pentax/app.js, /pentax/style.css  the dashboard's JS/CSS (embedded)
  *   GET    /api/pentax/status           JSON status + live camera parameters + capability matrix
  *   POST   /api/pentax/capture          take a photo, wait until it is in the camera buffer
  *   POST   /api/pentax/af               half-press / autofocus only, no exposure
