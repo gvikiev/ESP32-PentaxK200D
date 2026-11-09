@@ -10,8 +10,9 @@
  *   POST   /api/pentax/tether           body {"connect":true|false} (default true)
  *   POST   /api/pentax/bulb             body {"duration_ms":30000}, 1000..600000
  *   POST   /api/pentax/param            set one camera parameter, body {"param":"iso","value":400,...}
- *   GET    /api/pentax/photo            stream the buffered photo (chunked, from the PSRAM queue)
- *   DELETE /api/pentax/photo            free the camera buffer
+ *   GET    /api/pentax/photo            ?slot=0..9&type=full|preview|thumb (default slot=0, type=full):
+ *                                        stream that RAM buffer slot (chunked, from the PSRAM queue)
+ *   DELETE /api/pentax/photo            ?slot=0..9 (default 0): free that RAM buffer slot
  *   GET    /ws                          WebSocket: JSON status/progress pushes
  */
 #pragma once

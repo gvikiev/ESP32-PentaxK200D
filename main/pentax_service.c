@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -288,6 +289,10 @@ static esp_err_t fetch_full_status_locked(void)
         return ESP_ERR_INVALID_RESPONSE;
     }
     s_full_status_valid = true;
+    /* Keep the lightweight summary's buffer_mask in sync too -- it is
+     * otherwise only updated right after a capture/bulb (wait_for_new_buffer_locked)
+     * and would stay stale across a delete until the next one. */
+    s_status.buffer_mask = s_full_status.bufmask;
     return ESP_OK;
 }
 
@@ -864,10 +869,19 @@ esp_err_t pentax_service_bulb_capture(uint32_t duration_ms, uint32_t timeout_ms)
 
 /* ------------------------------- download ------------------------------------ */
 
+static uint32_t buf_kind_to_type(pentax_buf_kind_t kind)
+{
+    switch (kind) {
+    case PENTAX_BUF_PREVIEW: return 8u;
+    case PENTAX_BUF_THUMB:   return 9u;
+    default:                 return CONFIG_PENTAXHUB_PENTAX_BUF_TYPE;
+    }
+}
+
 typedef struct {
     photo_stream_t *stream;
     uint8_t *blk;
-    int slot;
+    int slot; /* photo_stream_t block index, unrelated to the camera RAM buffer slot below */
     size_t fill;
     uint32_t done;
     TickType_t last_notify;
@@ -933,7 +947,7 @@ static esp_err_t download_range(dl_ctx_t *d, uint32_t addr, uint32_t length)
     return ESP_OK;
 }
 
-static esp_err_t download_current_buffer(dl_ctx_t *d)
+static esp_err_t download_current_buffer(dl_ctx_t *d, uint32_t slot, uint32_t buf_type)
 {
     esp_err_t err = ensure_session();
     if (err != ESP_OK) {
@@ -944,11 +958,11 @@ static esp_err_t download_current_buffer(dl_ctx_t *d)
     if (err != ESP_OK) {
         return err;
     }
-    if ((mask & 1u) == 0) {
-        return ESP_ERR_NOT_FOUND; /* buffer 0 empty: nothing to download */
+    if ((mask & (1u << slot)) == 0) {
+        return ESP_ERR_NOT_FOUND; /* that RAM buffer slot is empty: nothing to download */
     }
     /* Older bodies (K200D) take only three select-buffer arguments. */
-    uint32_t sel[3] = { 0, CONFIG_PENTAXHUB_PENTAX_BUF_TYPE, CONFIG_PENTAXHUB_PENTAX_BUF_RES };
+    uint32_t sel[3] = { slot, buf_type, CONFIG_PENTAXHUB_PENTAX_BUF_RES };
     err = pentax_scsi_exec(&s_scsi, G_BUF, C_BUF_SELECT, sel, 3, NULL, 0, NULL, NULL, NULL);
     if (err != ESP_OK) {
         return err;
@@ -986,9 +1000,19 @@ static esp_err_t download_current_buffer(dl_ctx_t *d)
     return ESP_ERR_INVALID_RESPONSE; /* never saw a "last segment" marker */
 }
 
+typedef struct {
+    photo_stream_t *stream;
+    uint32_t slot;     /* camera RAM buffer slot, 0..PENTAX_RAM_SLOTS-1 */
+    uint32_t buf_type;
+} dl_task_arg_t;
+
 static void download_task(void *arg)
 {
-    photo_stream_t *stream = (photo_stream_t *)arg;
+    dl_task_arg_t *a = (dl_task_arg_t *)arg;
+    photo_stream_t *stream = a->stream;
+    uint32_t slot = a->slot;
+    uint32_t buf_type = a->buf_type;
+    free(a);
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_status.state = PS_STATE_BUSY;
@@ -997,7 +1021,7 @@ static void download_task(void *arg)
     notify();
 
     dl_ctx_t d = { .stream = stream, .err = ESP_OK, .last_notify = xTaskGetTickCount() };
-    esp_err_t err = download_current_buffer(&d);
+    esp_err_t err = download_current_buffer(&d, slot, buf_type);
     if (err == ESP_OK) {
         dl_flush(&d);
     } else {
@@ -1013,8 +1037,11 @@ static void download_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t pentax_service_download_start(photo_stream_t **out)
+esp_err_t pentax_service_download_start(uint32_t slot, pentax_buf_kind_t kind, photo_stream_t **out)
 {
+    if (slot >= PENTAX_RAM_SLOTS) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (usb_msc_link_state() != USB_MSC_CONNECTED) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1022,7 +1049,16 @@ esp_err_t pentax_service_download_start(photo_stream_t **out)
     if (!s) {
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreate(download_task, "pentax_dl", 6144, s, 5, NULL) != pdPASS) {
+    dl_task_arg_t *a = malloc(sizeof(*a));
+    if (!a) {
+        ps_destroy(s);
+        return ESP_ERR_NO_MEM;
+    }
+    a->stream = s;
+    a->slot = slot;
+    a->buf_type = buf_kind_to_type(kind);
+    if (xTaskCreate(download_task, "pentax_dl", 6144, a, 5, NULL) != pdPASS) {
+        free(a);
         ps_destroy(s);
         return ESP_ERR_NO_MEM;
     }
@@ -1054,19 +1090,30 @@ void pentax_service_download_end(photo_stream_t *s)
     ps_destroy(s);
 }
 
-esp_err_t pentax_service_delete_photo(void)
+esp_err_t pentax_service_delete_photo(uint32_t slot)
 {
+    if (slot >= PENTAX_RAM_SLOTS) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     esp_err_t err = ensure_session();
     if (err == ESP_OK) {
-        uint32_t buf0 = 0;
-        err = pentax_scsi_exec(&s_scsi, G_BUF, C_BUF_DELETE, &buf0, 1, NULL, 0, NULL, NULL, NULL);
+        uint32_t arg = slot;
+        err = pentax_scsi_exec(&s_scsi, G_BUF, C_BUF_DELETE, &arg, 1, NULL, 0, NULL, NULL, NULL);
     }
     if (err != ESP_OK) {
         set_error("delete", err);
+    } else {
+        /* Refresh the mask immediately rather than leaving it stale until
+         * the next status poll's full-status fetch updates it. */
+        uint32_t mask = 0;
+        if (read_buffer_mask(&mask) == ESP_OK) {
+            s_status.buffer_mask = mask;
+        }
     }
+    notify();
     xSemaphoreGive(s_mutex);
     return err;
 }

@@ -23,6 +23,15 @@ typedef enum {
     PS_STATE_BUSY,
 } pentax_state_t;
 
+/* K200D RAM buffer has 10 slots (bufmask bit n = buffer n holds a photo). */
+#define PENTAX_RAM_SLOTS 10u
+
+typedef enum {
+    PENTAX_BUF_FULL = 0, /* full-resolution image */
+    PENTAX_BUF_PREVIEW,  /* buffer type 8 */
+    PENTAX_BUF_THUMB,    /* buffer type 9 */
+} pentax_buf_kind_t;
+
 typedef struct {
     pentax_state_t state;
     uint32_t buffer_mask;      /* bit n set = camera image buffer n holds a photo */
@@ -111,14 +120,18 @@ esp_err_t pentax_service_set_tether(bool connect);
  * 10 minutes). */
 esp_err_t pentax_service_bulb_capture(uint32_t duration_ms, uint32_t timeout_ms);
 
-/* Starts streaming the newest buffered photo. On success the caller owns
- * *out and must finish with pentax_service_download_end(). */
-esp_err_t pentax_service_download_start(photo_stream_t **out);
+/* Starts streaming the photo in the given RAM buffer slot (0..9) as `kind`.
+ * ESP_ERR_INVALID_ARG if slot is out of range, ESP_ERR_NOT_FOUND once the
+ * download task finds that slot empty (reported through the stream, not
+ * this return value -- see pentax_http.c's first-block handling). On
+ * success the caller owns *out and must finish with
+ * pentax_service_download_end(). */
+esp_err_t pentax_service_download_start(uint32_t slot, pentax_buf_kind_t kind, photo_stream_t **out);
 /* Aborts (if still running), waits for the producer to finish, frees the stream. */
 void pentax_service_download_end(photo_stream_t *s);
 
-/* Frees the photo in camera buffer 0 (after a successful transfer). */
-esp_err_t pentax_service_delete_photo(void);
+/* Frees the photo in the given RAM buffer slot (0..9). */
+esp_err_t pentax_service_delete_photo(uint32_t slot);
 
 #ifdef __cplusplus
 }

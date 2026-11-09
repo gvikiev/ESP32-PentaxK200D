@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -196,6 +197,36 @@ static int json_get_int(const cJSON *obj, const char *key, int def)
     return cJSON_IsNumber(v) ? v->valueint : def;
 }
 
+static long query_long(httpd_req_t *req, const char *key, long def)
+{
+    char q[96];
+    char v[24];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) {
+        return def;
+    }
+    if (httpd_query_key_value(q, key, v, sizeof(v)) != ESP_OK) {
+        return def;
+    }
+    return atol(v);
+}
+
+/* ?type=full|preview|thumb (default: full). */
+static pentax_buf_kind_t query_buf_kind(httpd_req_t *req)
+{
+    char q[96];
+    char v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "type", v, sizeof(v)) == ESP_OK) {
+        if (!strcmp(v, "preview")) {
+            return PENTAX_BUF_PREVIEW;
+        }
+        if (!strcmp(v, "thumb") || !strcmp(v, "thumbnail")) {
+            return PENTAX_BUF_THUMB;
+        }
+    }
+    return PENTAX_BUF_FULL;
+}
+
 static const char *state_str(pentax_state_t s)
 {
     switch (s) {
@@ -353,6 +384,12 @@ static esp_err_t send_full_status(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "bytes_done", st.bytes_done);
     cJSON_AddNumberToObject(root, "bytes_total", st.bytes_total);
     cJSON_AddStringToObject(root, "last_error", st.last_error);
+
+    cJSON *buffers = cJSON_AddArrayToObject(root, "buffers");
+    for (uint32_t i = 0; i < PENTAX_RAM_SLOTS; i++) {
+        cJSON_AddItemToArray(buffers, cJSON_CreateBool((st.buffer_mask & (1u << i)) != 0));
+    }
+
     cJSON_AddBoolToObject(root, "params_valid", fs_ok);
     if (fs_ok) {
         cJSON_AddItemToObject(root, "params", build_params(&fs));
@@ -649,21 +686,24 @@ static esp_err_t photo_get_handler(httpd_req_t *req)
 {
     uint32_t id = ++s_http_request_id;
 
-    ESP_LOGI(TAG, "[HTTP #%lu] GET /api/pentax/photo START",
-             (unsigned long)id);
+    uint32_t slot = (uint32_t)query_long(req, "slot", 0);
+    pentax_buf_kind_t kind = query_buf_kind(req);
+
+    ESP_LOGI(TAG, "[HTTP #%lu] GET /api/pentax/photo?slot=%u START",
+             (unsigned long)id, (unsigned)slot);
 
     photo_stream_t *stream = NULL;
-    esp_err_t err = pentax_service_download_start(&stream);
+    esp_err_t err = pentax_service_download_start(slot, kind, &stream);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "[HTTP #%lu] DOWNLOAD START FAILED: %s",
                  (unsigned long)id, esp_err_to_name(err));
 
         httpd_resp_send_err(req,
-            err == ESP_ERR_INVALID_STATE
+            (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_INVALID_ARG)
                 ? HTTPD_400_BAD_REQUEST
                 : HTTPD_500_INTERNAL_SERVER_ERROR,
-            "camera not ready");
+            err == ESP_ERR_INVALID_ARG ? "slot must be 0..9" : "camera not ready");
 
         return ESP_OK;
     }
@@ -789,11 +829,13 @@ static esp_err_t photo_delete_handler(httpd_req_t *req)
 {
     uint32_t id = ++s_http_request_id;
 
-    ESP_LOGW(TAG,
-        "[HTTP #%lu] DELETE /api/pentax/photo START",
-        (unsigned long)id);
+    uint32_t slot = (uint32_t)query_long(req, "slot", 0);
 
-    esp_err_t err = pentax_service_delete_photo();
+    ESP_LOGW(TAG,
+        "[HTTP #%lu] DELETE /api/pentax/photo?slot=%u START",
+        (unsigned long)id, (unsigned)slot);
+
+    esp_err_t err = pentax_service_delete_photo(slot);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
@@ -802,8 +844,8 @@ static esp_err_t photo_delete_handler(httpd_req_t *req)
             esp_err_to_name(err));
 
         httpd_resp_send_err(req,
-            HTTPD_500_INTERNAL_SERVER_ERROR,
-            "delete failed");
+            err == ESP_ERR_INVALID_ARG ? HTTPD_400_BAD_REQUEST : HTTPD_500_INTERNAL_SERVER_ERROR,
+            err == ESP_ERR_INVALID_ARG ? "slot must be 0..9" : "delete failed");
 
         return ESP_OK;
     }
