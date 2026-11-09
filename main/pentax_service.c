@@ -35,6 +35,13 @@
 #define C_DSP_WU_REQ       0x09
 #define G_ACT 0x10
 #define C_SHUTTER          0x05
+#define C_GREEN_BUTTON     0x07
+#define C_TETHER_CONNECT   0x0A
+#define C_BULB             0x0D
+#define C_DUST_REMOVAL     0x11
+
+#define SHUTTER_ACTION_AF      1u /* half-press / autofocus only */
+#define SHUTTER_ACTION_RELEASE 2u /* full press */
 #define G_BUF 0x02
 #define C_BUF_STATUS       0x00
 #define C_BUF_SELECT       0x01
@@ -670,6 +677,29 @@ esp_err_t pentax_service_set_flash_ev_comp(int32_t nom, int32_t denom)
 
 /* -------------------------------- capture ------------------------------------ */
 
+/* Call with s_mutex held. Polls the buffer mask until a bit outside
+ * `before` appears (a new photo landed) or timeout_ms elapses. On success
+ * updates s_status.buffer_mask. */
+static esp_err_t wait_for_new_buffer_locked(uint32_t before, uint32_t timeout_ms)
+{
+    TickType_t start = xTaskGetTickCount();
+    for (;;) {
+        uint32_t mask = 0;
+        esp_err_t err = read_buffer_mask(&mask);
+        if (err != ESP_OK) {
+            return err;
+        }
+        if ((mask & ~before) != 0) {
+            s_status.buffer_mask = mask;
+            return ESP_OK;
+        }
+        if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(timeout_ms)) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 esp_err_t pentax_service_capture(uint32_t timeout_ms)
 {
     if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
@@ -686,25 +716,145 @@ esp_err_t pentax_service_capture(uint32_t timeout_ms)
     uint32_t before = 0;
     err = read_buffer_mask(&before);
     if (err == ESP_OK) {
-        uint32_t full_press = 2;
-        err = pentax_scsi_exec(&s_scsi, G_ACT, C_SHUTTER, &full_press, 1, NULL, 0, NULL, NULL, NULL);
+        uint32_t action = SHUTTER_ACTION_RELEASE;
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_SHUTTER, &action, 1, NULL, 0, NULL, NULL, NULL);
     }
-    TickType_t start = xTaskGetTickCount();
-    while (err == ESP_OK) {
-        uint32_t mask = 0;
-        err = read_buffer_mask(&mask);
-        if (err == ESP_OK && (mask & ~before) != 0) {
-            s_status.buffer_mask = mask;
-            break;
-        }
-        if (err == ESP_OK && (xTaskGetTickCount() - start) > pdMS_TO_TICKS(timeout_ms)) {
-            err = ESP_ERR_TIMEOUT;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
+    if (err == ESP_OK) {
+        err = wait_for_new_buffer_locked(before, timeout_ms);
     }
     if (err != ESP_OK) {
         set_error("capture", err);
         s_session_open = false; /* force re-handshake after a failure */
+    }
+    s_status.state = (usb_msc_link_state() == USB_MSC_CONNECTED) ? PS_STATE_READY : s_status.state;
+    notify();
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t pentax_service_af(void)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ensure_session();
+    if (err == ESP_OK) {
+        s_status.state = PS_STATE_BUSY;
+        notify();
+        uint32_t action = SHUTTER_ACTION_AF;
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_SHUTTER, &action, 1, NULL, 0, NULL, NULL, NULL);
+    }
+    if (err != ESP_OK) {
+        set_error("af", err);
+        s_session_open = false;
+    }
+    s_status.state = (usb_msc_link_state() == USB_MSC_CONNECTED) ? PS_STATE_READY : s_status.state;
+    notify();
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t pentax_service_green_button(void)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ensure_session();
+    if (err == ESP_OK) {
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_GREEN_BUTTON, NULL, 0, NULL, 0, NULL, NULL, NULL);
+    }
+    if (err != ESP_OK) {
+        set_error("green_button", err);
+        s_session_open = false;
+    } else if (fetch_full_status_locked() != ESP_OK) {
+        /* Green button resets exposure to program P; best-effort refresh so
+         * the next status read reflects it. Not fatal if it fails. */
+        ESP_LOGW(TAG, "green_button: write accepted but post-write status refresh failed");
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t pentax_service_dust_removal(void)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ensure_session();
+    if (err == ESP_OK) {
+        s_status.state = PS_STATE_BUSY;
+        notify();
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_DUST_REMOVAL, NULL, 0, NULL, 0, NULL, NULL, NULL);
+    }
+    if (err != ESP_OK) {
+        set_error("dust_removal", err);
+        s_session_open = false;
+    }
+    s_status.state = (usb_msc_link_state() == USB_MSC_CONNECTED) ? PS_STATE_READY : s_status.state;
+    notify();
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t pentax_service_set_tether(bool connect)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ensure_session();
+    if (err == ESP_OK) {
+        uint32_t status = connect ? 1u : 0u;
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_TETHER_CONNECT, &status, 1, NULL, 0, NULL, NULL, NULL);
+    }
+    if (err != ESP_OK) {
+        set_error("tether", err);
+        s_session_open = false;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+/* Starts the bulb exposure, sleeps for duration_ms (holding s_mutex the
+ * whole time, same as pentax_service_capture() -- other callers degrade to
+ * cached status reads rather than blocking, see pentax_service_get_status()/
+ * pentax_service_get_full_status()), stops it, then waits for the resulting
+ * frame the same way a normal release does. */
+esp_err_t pentax_service_bulb_capture(uint32_t duration_ms, uint32_t timeout_ms)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ensure_session();
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_mutex);
+        return err;
+    }
+    s_status.state = PS_STATE_BUSY;
+    notify();
+
+    uint32_t before = 0;
+    err = read_buffer_mask(&before);
+    if (err == ESP_OK) {
+        uint32_t start = 1;
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_BULB, &start, 1, NULL, 0, NULL, NULL, NULL);
+    }
+    if (err == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(duration_ms));
+        uint32_t stop = 0;
+        err = pentax_scsi_exec(&s_scsi, G_ACT, C_BULB, &stop, 1, NULL, 0, NULL, NULL, NULL);
+        if (err != ESP_OK) {
+            /* Leaving the shutter open is worse than a redundant command:
+             * retry once before giving up. */
+            vTaskDelay(pdMS_TO_TICKS(200));
+            err = pentax_scsi_exec(&s_scsi, G_ACT, C_BULB, &stop, 1, NULL, 0, NULL, NULL, NULL);
+        }
+    }
+    if (err == ESP_OK) {
+        err = wait_for_new_buffer_locked(before, timeout_ms);
+    }
+    if (err != ESP_OK) {
+        set_error("bulb", err);
+        s_session_open = false;
     }
     s_status.state = (usb_msc_link_state() == USB_MSC_CONNECTED) ? PS_STATE_READY : s_status.state;
     notify();

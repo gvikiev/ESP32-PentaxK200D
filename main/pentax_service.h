@@ -89,6 +89,28 @@ void pentax_service_get_writeonly_cache(pentax_writeonly_cache_t *out);
  * buffer or timeout_ms elapses. */
 esp_err_t pentax_service_capture(uint32_t timeout_ms);
 
+/* Half-press / autofocus only (no exposure, nothing lands in the buffer). */
+esp_err_t pentax_service_af(void);
+
+/* Pentax "green button": instantly resets exposure to the camera's P-mode
+ * defaults. */
+esp_err_t pentax_service_green_button(void);
+
+/* Triggers the sensor's ultrasonic dust-removal cycle. */
+esp_err_t pentax_service_dust_removal(void);
+
+/* Toggles the camera's own notion of being tethered, independent of the USB
+ * Mass Storage link itself (see docs/pentax_k200d_architecture_gemeni.md
+ * section 2.3, [10 0A]). */
+esp_err_t pentax_service_set_tether(bool connect);
+
+/* Opens the shutter, sleeps for duration_ms, closes it, then waits
+ * (timeout_ms) for the resulting frame to appear in the camera's buffer the
+ * same way pentax_service_capture() does. duration_ms is not bounded here;
+ * callers should apply their own sanity limit (the HTTP layer caps it at
+ * 10 minutes). */
+esp_err_t pentax_service_bulb_capture(uint32_t duration_ms, uint32_t timeout_ms);
+
 /* Starts streaming the newest buffered photo. On success the caller owns
  * *out and must finish with pentax_service_download_end(). */
 esp_err_t pentax_service_download_start(photo_stream_t **out);

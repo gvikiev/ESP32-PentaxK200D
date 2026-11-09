@@ -1,13 +1,18 @@
 /*
  * HTTP + WebSocket front end for the Pentax SCSI backend (stage 2).
  *
- *   GET    /                     minimal control page
- *   GET    /api/pentax/status    JSON status + live camera parameters + capability matrix
- *   POST   /api/pentax/capture   take a photo, wait until it is in the camera buffer
- *   POST   /api/pentax/param     set one camera parameter, body {"param":"iso","value":400,...}
- *   GET    /api/pentax/photo     stream the buffered photo (chunked, from the PSRAM queue)
- *   DELETE /api/pentax/photo     free the camera buffer
- *   GET    /ws                   WebSocket: JSON status/progress pushes
+ *   GET    /                            minimal control page
+ *   GET    /api/pentax/status           JSON status + live camera parameters + capability matrix
+ *   POST   /api/pentax/capture          take a photo, wait until it is in the camera buffer
+ *   POST   /api/pentax/af               half-press / autofocus only, no exposure
+ *   POST   /api/pentax/green-button     reset exposure to the camera's P-mode defaults
+ *   POST   /api/pentax/dust-removal     trigger the sensor's ultrasonic cleaning cycle
+ *   POST   /api/pentax/tether           body {"connect":true|false} (default true)
+ *   POST   /api/pentax/bulb             body {"duration_ms":30000}, 1000..600000
+ *   POST   /api/pentax/param            set one camera parameter, body {"param":"iso","value":400,...}
+ *   GET    /api/pentax/photo            stream the buffered photo (chunked, from the PSRAM queue)
+ *   DELETE /api/pentax/photo            free the camera buffer
+ *   GET    /ws                          WebSocket: JSON status/progress pushes
  */
 #pragma once
 

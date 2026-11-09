@@ -530,6 +530,23 @@ static esp_err_t status_handler(httpd_req_t *req)
     return err;
 }
 
+/* Shared tail for the simple action endpoints below: error -> JSON
+ * {"ok":false,"error":...} with a status code, success -> the lightweight
+ * status body (same as capture_handler's own response). */
+static esp_err_t send_action_result(httpd_req_t *req, esp_err_t err, const char *what, uint32_t id)
+{
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "[HTTP #%lu] %s FAILED: %s", (unsigned long)id, what, esp_err_to_name(err));
+        httpd_resp_set_status(req, err == ESP_ERR_INVALID_STATE ? "409 Conflict" : "502 Bad Gateway");
+        httpd_resp_set_type(req, "application/json");
+        char buf[96];
+        snprintf(buf, sizeof(buf), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+        return httpd_resp_sendstr(req, buf);
+    }
+    ESP_LOGI(TAG, "[HTTP #%lu] %s SUCCESS", (unsigned long)id, what);
+    return send_status(req);
+}
+
 static esp_err_t capture_handler(httpd_req_t *req)
 {
     uint32_t id = ++s_http_request_id;
@@ -560,6 +577,72 @@ static esp_err_t capture_handler(httpd_req_t *req)
              (unsigned long)id);
 
     return send_status(req);
+}
+
+static esp_err_t af_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/af", (unsigned long)id);
+    return send_action_result(req, pentax_service_af(), "AF", id);
+}
+
+static esp_err_t green_button_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/green-button", (unsigned long)id);
+    return send_action_result(req, pentax_service_green_button(), "GREEN BUTTON", id);
+}
+
+static esp_err_t dust_removal_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/dust-removal", (unsigned long)id);
+    return send_action_result(req, pentax_service_dust_removal(), "DUST REMOVAL", id);
+}
+
+static esp_err_t tether_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    bool connect = true;
+    char body[64];
+    if (read_body(req, body, sizeof(body)) == ESP_OK) {
+        cJSON *in = cJSON_Parse(body);
+        if (in) {
+            cJSON *jc = cJSON_GetObjectItem(in, "connect");
+            if (cJSON_IsBool(jc)) {
+                connect = cJSON_IsTrue(jc);
+            }
+            cJSON_Delete(in);
+        }
+    }
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/tether connect=%d", (unsigned long)id, (int)connect);
+    return send_action_result(req, pentax_service_set_tether(connect), "TETHER", id);
+}
+
+#define BULB_MIN_DURATION_MS 1000u
+#define BULB_MAX_DURATION_MS 600000u /* 10 minutes */
+#define BULB_WAIT_TIMEOUT_MS 15000u  /* for the resulting frame, once the shutter closes */
+
+static esp_err_t bulb_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    char body[64];
+    int duration_ms = 30000;
+    if (read_body(req, body, sizeof(body)) == ESP_OK) {
+        cJSON *in = cJSON_Parse(body);
+        duration_ms = json_get_int(in, "duration_ms", 30000);
+        if (in) {
+            cJSON_Delete(in);
+        }
+    }
+    if (duration_ms < (int)BULB_MIN_DURATION_MS || duration_ms > (int)BULB_MAX_DURATION_MS) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "duration_ms out of range (1000..600000)");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/bulb duration_ms=%d START", (unsigned long)id, duration_ms);
+    esp_err_t err = pentax_service_bulb_capture((uint32_t)duration_ms, BULB_WAIT_TIMEOUT_MS);
+    return send_action_result(req, err, "BULB", id);
 }
 
 static esp_err_t photo_get_handler(httpd_req_t *req)
@@ -837,7 +920,7 @@ esp_err_t pentax_http_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = CONFIG_PENTAXHUB_HTTP_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -852,6 +935,11 @@ esp_err_t pentax_http_start(void)
         { .uri = "/",                  .method = HTTP_GET,    .handler = index_handler },
         { .uri = "/api/pentax/status", .method = HTTP_GET,    .handler = status_handler },
         { .uri = "/api/pentax/capture",.method = HTTP_POST,   .handler = capture_handler },
+        { .uri = "/api/pentax/af",     .method = HTTP_POST,   .handler = af_handler },
+        { .uri = "/api/pentax/green-button", .method = HTTP_POST, .handler = green_button_handler },
+        { .uri = "/api/pentax/dust-removal", .method = HTTP_POST, .handler = dust_removal_handler },
+        { .uri = "/api/pentax/tether", .method = HTTP_POST,   .handler = tether_handler },
+        { .uri = "/api/pentax/bulb",   .method = HTTP_POST,   .handler = bulb_handler },
         { .uri = "/api/pentax/param",  .method = HTTP_POST,   .handler = param_post_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_GET,    .handler = photo_get_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_DELETE, .handler = photo_delete_handler },
