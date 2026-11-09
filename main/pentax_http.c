@@ -5,6 +5,10 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <strings.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -13,6 +17,7 @@
 
 #include "photo_stream.h"
 #include "pentax_status.h"
+#include "pentax_sd.h"
 
 #ifndef CONFIG_PENTAXHUB_HTTP_PORT
 #define CONFIG_PENTAXHUB_HTTP_PORT 80
@@ -210,6 +215,19 @@ static long query_long(httpd_req_t *req, const char *key, long def)
     return atol(v);
 }
 
+/* Query values aren't percent-decoded; callers are expected to pass plain
+ * paths (slashes and all) in ?path=, matching the examples in
+ * docs/pentax_k200d_architecture_gemeni.md section 6.2. */
+static void query_str(httpd_req_t *req, const char *key, char *out, size_t out_cap, const char *def)
+{
+    char q[192];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, key, out, out_cap) == ESP_OK) {
+        return;
+    }
+    snprintf(out, out_cap, "%s", def);
+}
+
 /* ?type=full|preview|thumb (default: full). */
 static pentax_buf_kind_t query_buf_kind(httpd_req_t *req)
 {
@@ -272,7 +290,7 @@ static void add_fraction(cJSON *parent, const char *key, double nom, double deno
  * fields are confirmed read/write ("available"), settable but not readable
  * back from the camera ("write_only"), readable but without a known SCSI
  * setter ("read_only"), or not yet wired up on the ESP32 side at all. */
-static cJSON *build_capabilities(void)
+static cJSON *build_capabilities(bool sd_mounted)
 {
     cJSON *c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "shutter_speed", "available");
@@ -297,7 +315,10 @@ static cJSON *build_capabilities(void)
     cJSON_AddStringToObject(c, "ae_metering", "write_only");
     cJSON_AddStringToObject(c, "flash_mode", "write_only");
     cJSON_AddStringToObject(c, "flash_ev_comp", "write_only");
-    cJSON_AddStringToObject(c, "sd_card_browser", "unavailable");
+    /* 🔶 VERIFY (H-1): SD access over standard SCSI READ(10) alongside the
+     * Pentax vendor channel is unconfirmed on real hardware -- see
+     * docs/pentax_k200d_architecture_gemeni.md section 10. */
+    cJSON_AddStringToObject(c, "sd_card_browser", sd_mounted ? "available" : "unavailable");
     return c;
 }
 
@@ -395,7 +416,12 @@ static esp_err_t send_full_status(httpd_req_t *req)
         cJSON_AddItemToObject(root, "params", build_params(&fs));
     }
     cJSON_AddItemToObject(root, "write_only", build_write_only(&wo));
-    cJSON_AddItemToObject(root, "capabilities", build_capabilities());
+
+    bool sd_mounted = pentax_sd_is_mounted();
+    cJSON *sd = cJSON_AddObjectToObject(root, "sd");
+    cJSON_AddBoolToObject(sd, "mounted", sd_mounted);
+
+    cJSON_AddItemToObject(root, "capabilities", build_capabilities(sd_mounted));
 
     char *out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -857,6 +883,210 @@ static esp_err_t photo_delete_handler(httpd_req_t *req)
     return send_status(req);
 }
 
+/* ---------------------------------- SD card ----------------------------------- *
+ * 🔶 VERIFY (H-1): unconfirmed on real hardware whether the K200D answers
+ * plain SCSI READ(10) in [PC] mode without a menu switch to [PictBridge].
+ * See docs/pentax_k200d_architecture_gemeni.md sections 3 and 10. */
+
+/* Rejects anything that isn't an absolute, traversal-free path and builds
+ * the full VFS path (mount base + rel) into out. */
+static esp_err_t sd_full_path(const char *rel, char *out, size_t out_cap)
+{
+    if (!rel || rel[0] != '/' || strstr(rel, "..")) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int n = snprintf(out, out_cap, "%s%s", pentax_sd_base_path(), rel);
+    if (n < 0 || (size_t)n >= out_cap) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+static const char *sd_content_type(const char *filename)
+{
+    const char *dot = strrchr(filename, '.');
+    if (!dot) {
+        return "application/octet-stream";
+    }
+    if (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")) return "image/jpeg";
+    if (!strcasecmp(dot, ".png")) return "image/png";
+    if (!strcasecmp(dot, ".tif") || !strcasecmp(dot, ".tiff")) return "image/tiff";
+    if (!strcasecmp(dot, ".dng")) return "image/x-adobe-dng";
+    return "application/octet-stream";
+}
+
+static esp_err_t sd_unavailable_err(httpd_req_t *req, esp_err_t err)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, err == ESP_ERR_INVALID_STATE ? "409 Conflict" : "500 Internal Server Error");
+    char buf[96];
+    snprintf(buf, sizeof(buf), "{\"ok\":false,\"error\":\"%s\"}", esp_err_to_name(err));
+    return httpd_resp_sendstr(req, buf);
+}
+
+static esp_err_t sd_list_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+
+    char rel[160];
+    query_str(req, "path", rel, sizeof(rel), "/");
+
+    esp_err_t err = pentax_sd_ensure_mounted();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[HTTP #%lu] GET /api/sd/list not mounted: %s", (unsigned long)id, esp_err_to_name(err));
+        return sd_unavailable_err(req, err);
+    }
+
+    char full[200];
+    if (sd_full_path(rel, full, sizeof(full)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid path");
+        return ESP_OK;
+    }
+
+    DIR *dir = opendir(full);
+    if (!dir) {
+        ESP_LOGW(TAG, "[HTTP #%lu] GET /api/sd/list '%s' failed (errno %d)", (unsigned long)id, full, errno);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "path not found");
+        return ESP_OK;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "path", rel);
+    cJSON *entries = cJSON_AddArrayToObject(root, "entries");
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) {
+            continue;
+        }
+        char entry_full[256];
+        snprintf(entry_full, sizeof(entry_full), "%s/%s", full, de->d_name);
+        struct stat st;
+        bool is_dir = false;
+        long size = 0;
+        if (stat(entry_full, &st) == 0) {
+            is_dir = S_ISDIR(st.st_mode);
+            size = (long)st.st_size;
+        }
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "name", de->d_name);
+        cJSON_AddBoolToObject(e, "is_dir", is_dir);
+        cJSON_AddNumberToObject(e, "size", (double)size);
+        cJSON_AddItemToArray(entries, e);
+    }
+    closedir(dir);
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json build failed");
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t send_err = httpd_resp_sendstr(req, out);
+    cJSON_free(out);
+    return send_err;
+}
+
+static esp_err_t sd_file_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+
+    char rel[160];
+    query_str(req, "path", rel, sizeof(rel), "");
+
+    esp_err_t err = pentax_sd_ensure_mounted();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[HTTP #%lu] GET /api/sd/file not mounted: %s", (unsigned long)id, esp_err_to_name(err));
+        return sd_unavailable_err(req, err);
+    }
+
+    char full[200];
+    if (rel[0] == '\0' || sd_full_path(rel, full, sizeof(full)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid path");
+        return ESP_OK;
+    }
+
+    struct stat st;
+    if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "file not found");
+        return ESP_OK;
+    }
+    FILE *f = fopen(full, "rb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "open failed");
+        return ESP_OK;
+    }
+
+    long total = (long)st.st_size;
+    long start = 0, end = total - 1;
+    bool partial = false;
+
+    char range[64];
+    if (httpd_req_get_hdr_value_str(req, "Range", range, sizeof(range)) == ESP_OK) {
+        long r_start = 0, r_end = 0;
+        if (sscanf(range, "bytes=%ld-%ld", &r_start, &r_end) == 2) {
+            start = r_start;
+            end = r_end;
+            partial = true;
+        } else if (sscanf(range, "bytes=%ld-", &r_start) == 1) {
+            start = r_start;
+            end = total - 1;
+            partial = true;
+        }
+        if (total == 0 || start < 0 || end >= total || start > end) {
+            fclose(f);
+            httpd_resp_set_status(req, "416 Range Not Satisfiable");
+            char cr[32];
+            snprintf(cr, sizeof(cr), "bytes */%ld", total);
+            httpd_resp_set_hdr(req, "Content-Range", cr);
+            return httpd_resp_send(req, NULL, 0);
+        }
+    }
+
+    long send_len = end - start + 1;
+    const char *filename = strrchr(full, '/');
+    filename = filename ? filename + 1 : full;
+
+    httpd_resp_set_type(req, sd_content_type(filename));
+    char disp[128];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+    httpd_resp_set_hdr(req, "Accept-Ranges", "bytes");
+    if (partial) {
+        httpd_resp_set_status(req, "206 Partial Content");
+        char cr[64];
+        snprintf(cr, sizeof(cr), "bytes %ld-%ld/%ld", start, end, total);
+        httpd_resp_set_hdr(req, "Content-Range", cr);
+    }
+
+    fseek(f, start, SEEK_SET);
+    uint8_t buf[2048];
+    long remaining = send_len;
+    esp_err_t result = ESP_OK;
+    while (remaining > 0) {
+        size_t want = remaining < (long)sizeof(buf) ? (size_t)remaining : sizeof(buf);
+        size_t got = fread(buf, 1, want, f);
+        if (got == 0) {
+            break;
+        }
+        if (httpd_resp_send_chunk(req, (const char *)buf, got) != ESP_OK) {
+            result = ESP_FAIL;
+            break;
+        }
+        remaining -= (long)got;
+    }
+    fclose(f);
+    if (result == ESP_OK) {
+        httpd_resp_send_chunk(req, NULL, 0);
+    }
+
+    ESP_LOGI(TAG, "[HTTP #%lu] GET /api/sd/file '%s' -> %s (%ld/%ld bytes%s)",
+             (unsigned long)id, full, esp_err_to_name(result), send_len, total, partial ? ", partial" : "");
+    return result;
+}
+
 static esp_err_t param_post_handler(httpd_req_t *req)
 {
     uint32_t id = ++s_http_request_id;
@@ -985,6 +1215,8 @@ esp_err_t pentax_http_start(void)
         { .uri = "/api/pentax/param",  .method = HTTP_POST,   .handler = param_post_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_GET,    .handler = photo_get_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_DELETE, .handler = photo_delete_handler },
+        { .uri = "/api/sd/list",       .method = HTTP_GET,    .handler = sd_list_handler },
+        { .uri = "/api/sd/file",       .method = HTTP_GET,    .handler = sd_file_handler },
         { .uri = "/ws",                .method = HTTP_GET,    .handler = ws_handler, .is_websocket = true },
     };
 

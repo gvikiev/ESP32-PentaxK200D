@@ -13,6 +13,7 @@
 #include "usb_msc_link.h"
 #include "bot.h"
 #include "pentax_scsi.h"
+#include "pentax_sd.h"
 
 #ifndef CONFIG_PENTAXHUB_STREAM_BLOCK_SIZE
 #define CONFIG_PENTAXHUB_STREAM_BLOCK_SIZE 16384
@@ -211,6 +212,7 @@ static void link_cb(usb_msc_state_t st, void *ctx)
     default:                   s_status.state = PS_STATE_DISCONNECTED; break;
     }
     xEventGroupSetBits(s_events, EV_LINK_CHANGED);
+    pentax_sd_on_link_change(st);
     notify();
 }
 
@@ -272,6 +274,51 @@ static esp_err_t read_buffer_mask(uint32_t *mask)
         return ESP_ERR_INVALID_RESPONSE;
     }
     *mask = rd32(res);
+    return ESP_OK;
+}
+
+esp_err_t pentax_service_scsi_io(const uint8_t *cdb, uint8_t cdb_len, bot_dir_t dir,
+                                  uint8_t *buf, size_t len, uint32_t timeout_ms, size_t *out_received)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ensure_session();
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_mutex);
+        return err;
+    }
+
+    bot_cmd_t c = {
+        .cdb = cdb,
+        .cdb_len = cdb_len,
+        .dir = dir,
+        .out = (dir == BOT_DIR_OUT) ? buf : NULL,
+        .out_len = (dir == BOT_DIR_OUT) ? len : 0,
+        .in_len = (dir == BOT_DIR_IN) ? len : 0,
+        .in_buf = (dir == BOT_DIR_IN) ? buf : NULL,
+        .timeout_ms = timeout_ms,
+    };
+    bot_result_t r;
+    esp_err_t transact_err = bot_transact(&s_bot, &c, &r);
+    if (transact_err != ESP_OK) {
+        /* Transport-level failure (bot_transact already attempted its own
+         * reset recovery): force a Pentax re-handshake next time, same as
+         * every other command here. */
+        s_session_open = false;
+        xSemaphoreGive(s_mutex);
+        return transact_err;
+    }
+    if (r.csw_status != BOT_CSW_PASSED) {
+        /* A clean SCSI-level rejection (e.g. an out-of-range LBA) doesn't
+         * mean the link itself is wedged, so the Pentax session stays up. */
+        xSemaphoreGive(s_mutex);
+        return ESP_FAIL;
+    }
+    if (out_received) {
+        *out_received = r.in_received;
+    }
+    xSemaphoreGive(s_mutex);
     return ESP_OK;
 }
 
@@ -1131,5 +1178,9 @@ esp_err_t pentax_service_start(pentax_progress_cb_t cb, void *ctx)
     }
     s_status.state = PS_STATE_DISCONNECTED;
     wo_cache_load();
+    esp_err_t err = pentax_sd_init();
+    if (err != ESP_OK) {
+        return err;
+    }
     return usb_msc_link_init(link_cb, NULL);
 }

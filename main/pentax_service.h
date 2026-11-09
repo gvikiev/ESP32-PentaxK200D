@@ -7,10 +7,12 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include "esp_err.h"
 #include "photo_stream.h"
 #include "pentax_status.h"
+#include "bot.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -132,6 +134,21 @@ void pentax_service_download_end(photo_stream_t *s);
 
 /* Frees the photo in the given RAM buffer slot (0..9). */
 esp_err_t pentax_service_delete_photo(uint32_t slot);
+
+/* Raw standard-SCSI passthrough (INQUIRY, READ CAPACITY(10), READ(10), ...),
+ * for the SD card FatFs block device driver in pentax_sd.c. Shares the same
+ * mutex and bot_t instance as the Pentax vendor channel above, so camera
+ * operations and SD reads never interleave on the wire (see
+ * docs/pentax_k200d_architecture_gemeni.md section 3). Not for camera
+ * control -- use the pentax_service_* functions above for that.
+ *
+ * `len` bytes are transferred in or out of `buf` depending on `dir`
+ * (BOT_DIR_NONE for a command with no data stage). Returns the Pentax BOT
+ * transport result; a clean SCSI-level rejection (bad LBA, etc.) comes back
+ * as ESP_FAIL without forcing a Pentax session re-handshake, while a
+ * transport-level failure does (same policy as every other command here). */
+esp_err_t pentax_service_scsi_io(const uint8_t *cdb, uint8_t cdb_len, bot_dir_t dir,
+                                  uint8_t *buf, size_t len, uint32_t timeout_ms, size_t *out_received);
 
 #ifdef __cplusplus
 }

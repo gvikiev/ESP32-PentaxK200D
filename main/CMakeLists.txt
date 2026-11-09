@@ -8,6 +8,7 @@ idf_component_register(
         "bot.c"
         "pentax_scsi.c"
         "pentax_status.c"
+        "pentax_sd.c"
         "usb_msc_link.c"
         "photo_stream.c"
         "pentax_service.c"
@@ -21,6 +22,7 @@ idf_component_register(
         usb
         esp_http_server
         json
+        fatfs
     INCLUDE_DIRS "."
     EMBED_FILES "index.html" "app.js" "style.css"
 )

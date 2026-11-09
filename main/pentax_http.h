@@ -13,7 +13,12 @@
  *   GET    /api/pentax/photo            ?slot=0..9&type=full|preview|thumb (default slot=0, type=full):
  *                                        stream that RAM buffer slot (chunked, from the PSRAM queue)
  *   DELETE /api/pentax/photo            ?slot=0..9 (default 0): free that RAM buffer slot
+ *   GET    /api/sd/list                 ?path=/DCIM/100PENTX (default "/"): JSON directory listing
+ *   GET    /api/sd/file                 ?path=/DCIM/100PENTX/IMGP0001.JPG: stream a file, Range supported
  *   GET    /ws                          WebSocket: JSON status/progress pushes
+ *
+ * /api/sd/* requires the SD card to have mounted (see pentax_sd.h); until
+ * then they return 409, same as any other camera-busy/not-ready condition.
  */
 #pragma once
 
