@@ -3,12 +3,15 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "cJSON.h"
 
 #include "photo_stream.h"
+#include "pentax_status.h"
 
 #ifndef CONFIG_PENTAXHUB_HTTP_PORT
 #define CONFIG_PENTAXHUB_HTTP_PORT 80
@@ -198,6 +201,116 @@ static esp_err_t send_status(httpd_req_t *req)
     return httpd_resp_sendstr(req, buf);
 }
 
+/* ---------------------------- full status (params) --------------------------- */
+
+static void add_fraction(cJSON *parent, const char *key, double nom, double denom)
+{
+    cJSON *f = cJSON_AddObjectToObject(parent, key);
+    cJSON_AddNumberToObject(f, "nom", nom);
+    cJSON_AddNumberToObject(f, "denom", denom);
+}
+
+/* Static per-parameter availability matrix (docs/pentax_k200d_web_ui_specification.md
+ * section 1 and docs/pentax_k200d_architecture_gemeni.md section 2.2): which
+ * fields are confirmed read/write ("available"), settable but not readable
+ * back from the camera ("write_only"), readable but without a known SCSI
+ * setter ("read_only"), or not yet wired up on the ESP32 side at all. */
+static cJSON *build_capabilities(void)
+{
+    cJSON *c = cJSON_CreateObject();
+    cJSON_AddStringToObject(c, "shutter_speed", "available");
+    cJSON_AddStringToObject(c, "aperture", "available");
+    cJSON_AddStringToObject(c, "iso", "available");
+    cJSON_AddStringToObject(c, "ev_comp", "available");
+    cJSON_AddStringToObject(c, "image_format", "available");
+    cJSON_AddStringToObject(c, "jpeg_quality", "available");
+    cJSON_AddStringToObject(c, "jpeg_resolution", "available");
+    cJSON_AddStringToObject(c, "raw_format", "available");
+    cJSON_AddStringToObject(c, "custom_image_tone", "experimental");
+    cJSON_AddStringToObject(c, "saturation", "experimental");
+    cJSON_AddStringToObject(c, "sharpness", "experimental");
+    cJSON_AddStringToObject(c, "contrast", "experimental");
+    cJSON_AddStringToObject(c, "jpeg_hue", "experimental");
+    cJSON_AddStringToObject(c, "af_mode", "available");
+    cJSON_AddStringToObject(c, "af_area", "available");
+    cJSON_AddStringToObject(c, "af_point", "available");
+    cJSON_AddStringToObject(c, "drive_mode", "available");
+    cJSON_AddStringToObject(c, "shake_reduction", "read_only");
+    cJSON_AddStringToObject(c, "white_balance", "write_only");
+    cJSON_AddStringToObject(c, "ae_metering", "write_only");
+    cJSON_AddStringToObject(c, "flash_mode", "write_only");
+    cJSON_AddStringToObject(c, "flash_ev_comp", "write_only");
+    cJSON_AddStringToObject(c, "sd_card_browser", "unavailable");
+    return c;
+}
+
+static cJSON *build_params(const k200d_status_t *fs)
+{
+    cJSON *p = cJSON_CreateObject();
+    add_fraction(p, "shutter_speed", fs->set_shutter_nom, fs->set_shutter_denom);
+    add_fraction(p, "aperture", fs->set_aperture_nom, fs->set_aperture_denom);
+    add_fraction(p, "ev_comp", fs->ev_comp_nom, fs->ev_comp_denom);
+    cJSON_AddNumberToObject(p, "iso", fs->iso);
+    cJSON_AddNumberToObject(p, "auto_iso_min", fs->auto_iso_min);
+    cJSON_AddNumberToObject(p, "auto_iso_max", fs->auto_iso_max);
+    cJSON_AddNumberToObject(p, "image_format", fs->image_format);
+    cJSON_AddNumberToObject(p, "jpeg_resolution_idx", fs->jpeg_res_idx);
+    cJSON_AddNumberToObject(p, "jpeg_stars", fs->jpeg_stars);
+    cJSON_AddNumberToObject(p, "raw_format", fs->raw_format);
+    cJSON_AddNumberToObject(p, "custom_image_tone", fs->custom_image_tone);
+    cJSON_AddNumberToObject(p, "saturation", fs->saturation);
+    cJSON_AddNumberToObject(p, "sharpness", fs->sharpness);
+    cJSON_AddNumberToObject(p, "contrast", fs->contrast);
+    cJSON_AddNumberToObject(p, "jpeg_hue", fs->jpeg_hue);
+    cJSON_AddNumberToObject(p, "exposure_mode", fs->exposure_mode);
+    cJSON_AddNumberToObject(p, "af_mode", fs->af_mode);
+    cJSON_AddNumberToObject(p, "af_area_select", fs->af_area_select);
+    cJSON_AddNumberToObject(p, "af_point_mask", fs->af_point_mask);
+    cJSON_AddNumberToObject(p, "focused_af_point", fs->focused_af_point);
+    cJSON_AddNumberToObject(p, "drive_mode", fs->drive_mode);
+    cJSON_AddBoolToObject(p, "shake_reduction", fs->shake_reduction);
+    add_fraction(p, "lens_max_aperture", fs->lens_max_aperture_nom, fs->lens_max_aperture_denom);
+    add_fraction(p, "lens_min_aperture", fs->lens_min_aperture_nom, fs->lens_min_aperture_denom);
+    add_fraction(p, "focal_length", fs->focal_length_nom, fs->focal_length_denom);
+    return p;
+}
+
+/* GET /api/pentax/status: summary + live camera parameters + capability
+ * matrix. Capture/delete responses keep using the lighter send_status()
+ * above so a write action isn't slowed down by an extra 408-byte read. */
+static esp_err_t send_full_status(httpd_req_t *req)
+{
+    pentax_status_summary_t st;
+    pentax_service_get_status(&st);
+
+    k200d_status_t fs;
+    bool fs_ok = (pentax_service_get_full_status(&fs) == ESP_OK);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", state_str(st.state));
+    cJSON_AddNumberToObject(root, "buffer_mask", st.buffer_mask);
+    cJSON_AddNumberToObject(root, "bytes_done", st.bytes_done);
+    cJSON_AddNumberToObject(root, "bytes_total", st.bytes_total);
+    cJSON_AddStringToObject(root, "last_error", st.last_error);
+    cJSON_AddBoolToObject(root, "params_valid", fs_ok);
+    if (fs_ok) {
+        cJSON_AddItemToObject(root, "params", build_params(&fs));
+    }
+    cJSON_AddItemToObject(root, "capabilities", build_capabilities());
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json build failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_sendstr(req, out);
+    cJSON_free(out);
+    return err;
+}
+
 /* ------------------------------- WebSocket ----------------------------------- */
 
 static void ws_add(int fd)
@@ -347,7 +460,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "[HTTP #%lu] GET /api/pentax/status",
              (unsigned long)id);
 
-    esp_err_t err = send_status(req);
+    esp_err_t err = send_full_status(req);
 
     ESP_LOGI(TAG, "[HTTP #%lu] STATUS RESPONSE -> %s",
              (unsigned long)id, esp_err_to_name(err));

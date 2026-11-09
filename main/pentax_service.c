@@ -29,6 +29,7 @@
 #define G_SYS 0x00
 #define C_SET_CONNECT_MODE 0x00
 #define C_GET_STATUS       0x01
+#define C_GET_FULL_STATUS  0x08
 #define G_ACT 0x10
 #define C_SHUTTER          0x05
 #define G_BUF 0x02
@@ -62,6 +63,9 @@ static pentax_status_summary_t s_status;
 static pentax_progress_cb_t s_cb;
 static void *s_cb_ctx;
 
+static k200d_status_t s_full_status;
+static bool s_full_status_valid;
+
 /* ---------------------------------- status ----------------------------------- */
 
 static void notify(void)
@@ -87,6 +91,7 @@ static void link_cb(usb_msc_state_t st, void *ctx)
 {
     (void)ctx;
     s_session_open = false;
+    s_full_status_valid = false;
     switch (st) {
     case USB_MSC_CONNECTED:    s_status.state = PS_STATE_READY; break;
     case USB_MSC_NOT_MSC:      s_status.state = PS_STATE_WRONG_USB_MODE; break;
@@ -155,6 +160,40 @@ static esp_err_t read_buffer_mask(uint32_t *mask)
     }
     *mask = rd32(res);
     return ESP_OK;
+}
+
+/* Call with s_mutex held. */
+static esp_err_t fetch_full_status_locked(void)
+{
+    uint8_t buf[PENTAX_STATUS_LEN];
+    size_t n = 0;
+    esp_err_t err = pentax_scsi_exec(&s_scsi, G_SYS, C_GET_FULL_STATUS, NULL, 0, buf, sizeof(buf), &n, NULL, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (!pentax_parse_k200d_status(buf, n, &s_full_status)) {
+        ESP_LOGW(TAG, "full status response too short (%u bytes)", (unsigned)n);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    s_full_status_valid = true;
+    return ESP_OK;
+}
+
+esp_err_t pentax_service_get_full_status(k200d_status_t *out)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(300)) == pdTRUE) {
+        esp_err_t err = ensure_session();
+        if (err == ESP_OK) {
+            err = fetch_full_status_locked();
+            if (err != ESP_OK) {
+                set_error("full status", err);
+                s_session_open = false; /* force re-handshake next time */
+            }
+        }
+        xSemaphoreGive(s_mutex);
+    }
+    *out = s_full_status;
+    return s_full_status_valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 /* -------------------------------- capture ------------------------------------ */

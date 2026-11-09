@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "photo_stream.h"
+#include "pentax_status.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,12 @@ typedef void (*pentax_progress_cb_t)(const pentax_status_summary_t *st, void *ct
 
 esp_err_t pentax_service_start(pentax_progress_cb_t cb, void *ctx);
 void pentax_service_get_status(pentax_status_summary_t *out);
+
+/* Fetches a fresh 408-byte status buffer ([00 08]) from the camera when the
+ * link is free, or falls back to the last successfully parsed one when it
+ * is busy (e.g. mid-capture/download). Returns ESP_ERR_INVALID_STATE if no
+ * full status has ever been parsed yet (camera never connected). */
+esp_err_t pentax_service_get_full_status(k200d_status_t *out);
 
 /* Half-press + full-press, then waits until a photo appears in the camera's
  * buffer or timeout_ms elapses. */

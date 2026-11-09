@@ -7,6 +7,7 @@ idf_component_register(
         "ptp_transport.c"
         "bot.c"
         "pentax_scsi.c"
+        "pentax_status.c"
         "usb_msc_link.c"
         "photo_stream.c"
         "pentax_service.c"
