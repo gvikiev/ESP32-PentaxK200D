@@ -38,8 +38,8 @@
 static const char *TAG = "pentaxhub";
 
 /* "/" is the one route both backends want; everything else lives under
- * distinct prefixes (/api/pentax/*, /ws vs /api/*, /app.js, /style.css) and
- * is registered directly by web_server_register()/pentax_http_register().
+ * distinct prefixes (/api/pentax, /ws vs /api, /app.js, /style.css) and is
+ * registered directly by web_server_register()/pentax_http_register().
  * This picks whichever backend currently has a camera attached, defaulting
  * to the Pentax SCSI page (the more capable backend) when neither does. */
 static esp_err_t root_index_handler(httpd_req_t *req)

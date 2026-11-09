@@ -956,7 +956,7 @@ static esp_err_t sd_list_handler(httpd_req_t *req)
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) {
             continue;
         }
-        char entry_full[256];
+        char entry_full[512]; /* full[200] + '/' + up to NAME_MAX bytes of d_name */
         snprintf(entry_full, sizeof(entry_full), "%s/%s", full, de->d_name);
         struct stat st;
         bool is_dir = false;
@@ -1046,7 +1046,7 @@ static esp_err_t sd_file_handler(httpd_req_t *req)
     filename = filename ? filename + 1 : full;
 
     httpd_resp_set_type(req, sd_content_type(filename));
-    char disp[128];
+    char disp[256]; /* filename is a suffix of full[200]; room for the longest possible one plus the literal text */
     snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
     httpd_resp_set_hdr(req, "Accept-Ranges", "bytes");

@@ -22,8 +22,9 @@
  *   GET    /api/sd/file                 ?path=/DCIM/100PENTX/IMGP0001.JPG: stream a file, Range supported
  *   GET    /ws                          WebSocket: JSON status/progress pushes
  *
- * /api/sd/* requires the SD card to have mounted (see pentax_sd.h); until
- * then they return 409, same as any other camera-busy/not-ready condition.
+ * The /api/sd endpoints require the SD card to have mounted (see
+ * pentax_sd.h); until then they return 409, same as any other
+ * camera-busy/not-ready condition.
  */
 #pragma once
 
