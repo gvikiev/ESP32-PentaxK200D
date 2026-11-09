@@ -23,7 +23,7 @@
     "board/esp32s3-builtin.cfg"
   ],
   "idf.port": "COM6",
-  "idf.currentSetup": "C:\\esp\\v5.5.6\\esp-idf",
+  "idf.currentSetup": "C:\\Users\\Developer\\esp\\v5.5\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
   },
