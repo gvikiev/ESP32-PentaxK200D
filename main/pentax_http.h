@@ -14,6 +14,9 @@
  *   POST   /api/pentax/dust-removal     trigger the sensor's ultrasonic cleaning cycle
  *   POST   /api/pentax/tether           body {"connect":true|false} (default true)
  *   POST   /api/pentax/bulb             body {"duration_ms":30000}, 1000..600000
+ *   POST   /api/pentax/intervalometer   body {"count":10,"interval_ms":5000}
+ *   POST   /api/pentax/bracket          body {"ev":[{"nom":-10,"denom":10},{"nom":0,"denom":10},{"nom":10,"denom":10}]}
+ *   POST   /api/pentax/sequence/stop    stop a running intervalometer/bracket sequence
  *   POST   /api/pentax/param            set one camera parameter, body {"param":"iso","value":400,...}
  *   GET    /api/pentax/photo            ?slot=0..9&type=full|preview|thumb (default slot=0, type=full):
  *                                        stream that RAM buffer slot (chunked, from the PSRAM queue)

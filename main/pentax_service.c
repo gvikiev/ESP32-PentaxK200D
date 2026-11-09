@@ -1165,6 +1165,165 @@ esp_err_t pentax_service_delete_photo(uint32_t slot)
     return err;
 }
 
+/* ------------------------------ capture sequences ------------------------------ */
+
+#define SEQ_CAPTURE_TIMEOUT_MS 15000u
+
+static SemaphoreHandle_t s_seq_mutex;
+static pentax_sequence_kind_t s_seq_kind = PENTAX_SEQ_NONE;
+static uint32_t s_seq_done, s_seq_total;
+static volatile bool s_seq_stop;
+
+typedef struct {
+    uint32_t count;
+    uint32_t interval_ms;
+    int32_t ev_nom[PENTAX_SEQ_MAX_BRACKET];
+    int32_t ev_denom[PENTAX_SEQ_MAX_BRACKET];
+} seq_task_arg_t;
+
+void pentax_service_get_sequence_status(pentax_sequence_status_t *out)
+{
+    xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+    out->kind = s_seq_kind;
+    out->done = s_seq_done;
+    out->total = s_seq_total;
+    xSemaphoreGive(s_seq_mutex);
+}
+
+/* Call with s_seq_mutex NOT held; takes/releases it itself. */
+static void seq_finish_locked(void)
+{
+    xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+    s_seq_kind = PENTAX_SEQ_NONE;
+    xSemaphoreGive(s_seq_mutex);
+}
+
+static void interval_task(void *arg)
+{
+    seq_task_arg_t *a = arg;
+    for (uint32_t i = 0; i < a->count && !s_seq_stop; i++) {
+        pentax_service_capture(SEQ_CAPTURE_TIMEOUT_MS);
+        xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+        s_seq_done = i + 1;
+        xSemaphoreGive(s_seq_mutex);
+        if (i + 1 < a->count && !s_seq_stop && a->interval_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(a->interval_ms));
+        }
+    }
+    free(a);
+    seq_finish_locked();
+    vTaskDelete(NULL);
+}
+
+static void bracket_task(void *arg)
+{
+    seq_task_arg_t *a = arg;
+
+    /* Best-effort: remember the EV in effect before the bracket so it can
+     * be restored once the sequence ends. */
+    k200d_status_t before;
+    bool have_before = (pentax_service_get_full_status(&before) == ESP_OK);
+
+    for (uint32_t i = 0; i < a->count && !s_seq_stop; i++) {
+        pentax_service_set_ev_comp(a->ev_nom[i], a->ev_denom[i]);
+        pentax_service_capture(SEQ_CAPTURE_TIMEOUT_MS);
+        xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+        s_seq_done = i + 1;
+        xSemaphoreGive(s_seq_mutex);
+    }
+    if (have_before) {
+        pentax_service_set_ev_comp(before.ev_comp_nom, before.ev_comp_denom);
+    }
+    free(a);
+    seq_finish_locked();
+    vTaskDelete(NULL);
+}
+
+/* Call with s_seq_mutex held; releases it. Returns ESP_ERR_INVALID_STATE if
+ * a sequence is already running, otherwise claims `kind` and releases the
+ * lock so the caller can build and launch the task. */
+static esp_err_t seq_claim_locked(pentax_sequence_kind_t kind, uint32_t total)
+{
+    if (s_seq_kind != PENTAX_SEQ_NONE) {
+        xSemaphoreGive(s_seq_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_seq_kind = kind;
+    s_seq_done = 0;
+    s_seq_total = total;
+    s_seq_stop = false;
+    xSemaphoreGive(s_seq_mutex);
+    return ESP_OK;
+}
+
+esp_err_t pentax_service_intervalometer_start(uint32_t count, uint32_t interval_ms)
+{
+    if (count == 0 || count > 999 || interval_ms > 3600000u) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+    esp_err_t err = seq_claim_locked(PENTAX_SEQ_INTERVAL, count);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    seq_task_arg_t *a = malloc(sizeof(*a));
+    if (!a) {
+        seq_finish_locked();
+        return ESP_ERR_NO_MEM;
+    }
+    a->count = count;
+    a->interval_ms = interval_ms;
+    if (xTaskCreate(interval_task, "pentax_interval", 4096, a, 4, NULL) != pdPASS) {
+        free(a);
+        seq_finish_locked();
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+esp_err_t pentax_service_bracket_start(const int32_t *ev_nom, const int32_t *ev_denom, size_t n)
+{
+    if (n == 0 || n > PENTAX_SEQ_MAX_BRACKET) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+    esp_err_t err = seq_claim_locked(PENTAX_SEQ_BRACKET, (uint32_t)n);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    seq_task_arg_t *a = malloc(sizeof(*a));
+    if (!a) {
+        seq_finish_locked();
+        return ESP_ERR_NO_MEM;
+    }
+    a->count = (uint32_t)n;
+    a->interval_ms = 0;
+    for (size_t i = 0; i < n; i++) {
+        a->ev_nom[i] = ev_nom[i];
+        a->ev_denom[i] = ev_denom[i];
+    }
+    if (xTaskCreate(bracket_task, "pentax_bracket", 4096, a, 4, NULL) != pdPASS) {
+        free(a);
+        seq_finish_locked();
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+esp_err_t pentax_service_sequence_stop(void)
+{
+    xSemaphoreTake(s_seq_mutex, portMAX_DELAY);
+    bool running = (s_seq_kind != PENTAX_SEQ_NONE);
+    xSemaphoreGive(s_seq_mutex);
+    if (!running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_seq_stop = true;
+    return ESP_OK;
+}
+
 /* ---------------------------------- start ------------------------------------ */
 
 esp_err_t pentax_service_start(pentax_progress_cb_t cb, void *ctx)
@@ -1173,7 +1332,8 @@ esp_err_t pentax_service_start(pentax_progress_cb_t cb, void *ctx)
     s_cb_ctx = ctx;
     s_mutex = xSemaphoreCreateMutex();
     s_events = xEventGroupCreate();
-    if (!s_mutex || !s_events) {
+    s_seq_mutex = xSemaphoreCreateMutex();
+    if (!s_mutex || !s_events || !s_seq_mutex) {
         return ESP_ERR_NO_MEM;
     }
     s_status.state = PS_STATE_DISCONNECTED;

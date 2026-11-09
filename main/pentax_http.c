@@ -417,6 +417,16 @@ static esp_err_t send_full_status(httpd_req_t *req)
     cJSON *sd = cJSON_AddObjectToObject(root, "sd");
     cJSON_AddBoolToObject(sd, "mounted", sd_mounted);
 
+    pentax_sequence_status_t seq;
+    pentax_service_get_sequence_status(&seq);
+    cJSON *seqj = cJSON_AddObjectToObject(root, "sequence");
+    cJSON_AddBoolToObject(seqj, "running", seq.kind != PENTAX_SEQ_NONE);
+    cJSON_AddStringToObject(seqj, "kind",
+        seq.kind == PENTAX_SEQ_INTERVAL ? "interval" :
+        seq.kind == PENTAX_SEQ_BRACKET  ? "bracket"  : "none");
+    cJSON_AddNumberToObject(seqj, "done", seq.done);
+    cJSON_AddNumberToObject(seqj, "total", seq.total);
+
     cJSON_AddItemToObject(root, "capabilities", build_capabilities(sd_mounted));
 
     char *out = cJSON_PrintUnformatted(root);
@@ -702,6 +712,65 @@ static esp_err_t bulb_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/bulb duration_ms=%d START", (unsigned long)id, duration_ms);
     esp_err_t err = pentax_service_bulb_capture((uint32_t)duration_ms, BULB_WAIT_TIMEOUT_MS);
     return send_action_result(req, err, "BULB", id);
+}
+
+static esp_err_t intervalometer_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    char body[64];
+    int count = 0, interval_ms = 0;
+    if (read_body(req, body, sizeof(body)) == ESP_OK) {
+        cJSON *in = cJSON_Parse(body);
+        count = json_get_int(in, "count", 0);
+        interval_ms = json_get_int(in, "interval_ms", 0);
+        if (in) {
+            cJSON_Delete(in);
+        }
+    }
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/intervalometer count=%d interval_ms=%d START",
+             (unsigned long)id, count, interval_ms);
+    esp_err_t err = pentax_service_intervalometer_start((uint32_t)count, (uint32_t)interval_ms);
+    return send_action_result(req, err, "INTERVALOMETER", id);
+}
+
+static esp_err_t bracket_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    char body[256];
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    int n = 0;
+    if (read_body(req, body, sizeof(body)) == ESP_OK) {
+        cJSON *in = cJSON_Parse(body);
+        cJSON *arr = in ? cJSON_GetObjectItem(in, "ev") : NULL;
+        if (cJSON_IsArray(arr)) {
+            int32_t nom[PENTAX_SEQ_MAX_BRACKET], denom[PENTAX_SEQ_MAX_BRACKET];
+            cJSON *item;
+            cJSON_ArrayForEach(item, arr) {
+                if (n >= (int)PENTAX_SEQ_MAX_BRACKET) {
+                    break;
+                }
+                nom[n] = json_get_int(item, "nom", 0);
+                denom[n] = json_get_int(item, "denom", 1);
+                n++;
+            }
+            if (n > 0) {
+                err = pentax_service_bracket_start(nom, denom, (size_t)n);
+            }
+        }
+        if (in) {
+            cJSON_Delete(in);
+        }
+    }
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/bracket n=%d START", (unsigned long)id, n);
+    return send_action_result(req, err, "BRACKET", id);
+}
+
+static esp_err_t sequence_stop_handler(httpd_req_t *req)
+{
+    uint32_t id = ++s_http_request_id;
+    ESP_LOGI(TAG, "[HTTP #%lu] POST /api/pentax/sequence/stop", (unsigned long)id);
+    esp_err_t err = pentax_service_sequence_stop();
+    return send_action_result(req, err, "SEQUENCE STOP", id);
 }
 
 static esp_err_t photo_get_handler(httpd_req_t *req)
@@ -1193,6 +1262,9 @@ esp_err_t pentax_http_register(httpd_handle_t server)
         { .uri = "/api/pentax/dust-removal", .method = HTTP_POST, .handler = dust_removal_handler },
         { .uri = "/api/pentax/tether", .method = HTTP_POST,   .handler = tether_handler },
         { .uri = "/api/pentax/bulb",   .method = HTTP_POST,   .handler = bulb_handler },
+        { .uri = "/api/pentax/intervalometer", .method = HTTP_POST, .handler = intervalometer_handler },
+        { .uri = "/api/pentax/bracket", .method = HTTP_POST,  .handler = bracket_handler },
+        { .uri = "/api/pentax/sequence/stop", .method = HTTP_POST, .handler = sequence_stop_handler },
         { .uri = "/api/pentax/param",  .method = HTTP_POST,   .handler = param_post_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_GET,    .handler = photo_get_handler },
         { .uri = "/api/pentax/photo",  .method = HTTP_DELETE, .handler = photo_delete_handler },

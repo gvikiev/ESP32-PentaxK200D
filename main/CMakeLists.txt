@@ -15,6 +15,7 @@ idf_component_register(
         "pentax_service.c"
         "pentax_http.c"
         "web_server.c"
+        "ota_http.c"
     PRIV_REQUIRES
         esp_wifi
         esp_netif
@@ -24,6 +25,7 @@ idf_component_register(
         esp_http_server
         json
         fatfs
+        app_update
     INCLUDE_DIRS "."
     EMBED_FILES "index.html" "app.js" "style.css"
 )

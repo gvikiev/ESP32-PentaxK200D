@@ -30,6 +30,7 @@
 #include "web_server.h"
 #include "pentax_service.h"
 #include "pentax_http.h"
+#include "ota_http.h"
 
 #ifndef CONFIG_PENTAXHUB_HTTP_PORT
 #define CONFIG_PENTAXHUB_HTTP_PORT 80
@@ -79,7 +80,7 @@ void app_main(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = CONFIG_PENTAXHUB_HTTP_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 28; /* both backends' routes plus the shared "/" */
+    config.max_uri_handlers = 40; /* both backends' routes, OTA, and the shared "/" */
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -91,6 +92,7 @@ void app_main(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root_route));
     ESP_ERROR_CHECK(web_server_register(server));
     ESP_ERROR_CHECK(pentax_http_register(server));
+    ESP_ERROR_CHECK(ota_http_register(server));
 
     ESP_LOGI(TAG, "PentaxHub ready - connect to WiFi '%s' and open http://192.168.4.1/", CONFIG_PENTAXHUB_AP_SSID);
 }

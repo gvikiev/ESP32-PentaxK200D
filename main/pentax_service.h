@@ -135,6 +135,41 @@ void pentax_service_download_end(photo_stream_t *s);
 /* Frees the photo in the given RAM buffer slot (0..9). */
 esp_err_t pentax_service_delete_photo(uint32_t slot);
 
+/* ------------------------------ capture sequences ------------------------------ *
+ * Intervalometer and exposure bracketing (architecture doc section 7/8,
+ * Фаза 8): both run as a background task that drives the existing
+ * capture/parameter-write primitives, so only one of these (or a plain
+ * capture) can be in flight at a time. */
+
+#define PENTAX_SEQ_MAX_BRACKET 9u
+
+typedef enum {
+    PENTAX_SEQ_NONE = 0,
+    PENTAX_SEQ_INTERVAL,
+    PENTAX_SEQ_BRACKET,
+} pentax_sequence_kind_t;
+
+typedef struct {
+    pentax_sequence_kind_t kind;
+    uint32_t done;
+    uint32_t total;
+} pentax_sequence_status_t;
+
+void pentax_service_get_sequence_status(pentax_sequence_status_t *out);
+
+/* Shoots `count` photos (1..999), waiting `interval_ms` (0..3600000)
+ * between the end of one and the start of the next. */
+esp_err_t pentax_service_intervalometer_start(uint32_t count, uint32_t interval_ms);
+
+/* Shoots one photo per (ev_nom[i], ev_denom[i]) EV-compensation value
+ * (1..PENTAX_SEQ_MAX_BRACKET of them), restoring the EV comp in effect
+ * before the sequence started once it finishes or is stopped. */
+esp_err_t pentax_service_bracket_start(const int32_t *ev_nom, const int32_t *ev_denom, size_t n);
+
+/* Asks the running sequence (if any) to stop after its current shot.
+ * ESP_ERR_INVALID_STATE if nothing is running. */
+esp_err_t pentax_service_sequence_stop(void);
+
 /* Raw standard-SCSI passthrough (INQUIRY, READ CAPACITY(10), READ(10), ...),
  * for the SD card FatFs block device driver in pentax_sd.c. Shares the same
  * mutex and bot_t instance as the Pentax vendor channel above, so camera
