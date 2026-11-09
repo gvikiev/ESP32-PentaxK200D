@@ -1,7 +1,12 @@
 /*
- * HTTP + WebSocket front end for the Pentax SCSI backend (stage 2).
+ * HTTP + WebSocket front end for the Pentax SCSI backend. Registers its
+ * routes on a shared httpd server (see pentaxhub_main.c), which also hosts
+ * the PTP backend's routes (web_server.h) -- both backends run at the same
+ * time now; whichever USB interface class the attached camera exposes
+ * decides which one actually has a camera to talk to (see
+ * docs/pentax_k200d_architecture_gemeni.md section 5.1).
  *
- *   GET    /                            minimal control page
+ *   GET    /                            minimal control page (pentax_http_index_handler)
  *   GET    /api/pentax/status           JSON status + live camera parameters + capability matrix
  *   POST   /api/pentax/capture          take a photo, wait until it is in the camera buffer
  *   POST   /api/pentax/af               half-press / autofocus only, no exposure
@@ -23,6 +28,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_http_server.h"
 #include "pentax_service.h"
 
 #ifdef __cplusplus
@@ -30,10 +36,17 @@ extern "C" {
 #endif
 
 /* Pass to pentax_service_start() as the progress callback. Safe to call
- * before pentax_http_start() (it then does nothing). */
+ * before pentax_http_register() (it then does nothing). */
 void pentax_http_progress_cb(const pentax_status_summary_t *st, void *ctx);
 
-esp_err_t pentax_http_start(void);
+/* Registers this backend's routes (everything above except "/") on an
+ * already-started httpd server. */
+esp_err_t pentax_http_register(httpd_handle_t server);
+
+/* The "/" page content, exposed so pentaxhub_main.c's merged root handler
+ * can pick it or web_server_index_handler() depending on which backend
+ * currently has a camera attached. */
+esp_err_t pentax_http_index_handler(httpd_req_t *req);
 
 #ifdef __cplusplus
 }

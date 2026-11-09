@@ -19,10 +19,6 @@
 #include "pentax_status.h"
 #include "pentax_sd.h"
 
-#ifndef CONFIG_PENTAXHUB_HTTP_PORT
-#define CONFIG_PENTAXHUB_HTTP_PORT 80
-#endif
-
 #define MAX_WS_CLIENTS      4
 #define CAPTURE_TIMEOUT_MS  15000
 #define BLOCK_WAIT_MS       20000
@@ -570,9 +566,9 @@ void pentax_http_progress_cb(const pentax_status_summary_t *st, void *ctx)
 
 /* --------------------------------- handlers ---------------------------------- */
 
-static esp_err_t index_handler(httpd_req_t *req)
+esp_err_t pentax_http_index_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "[HTTP] GET /");
+    ESP_LOGI(TAG, "[HTTP] GET / (pentax)");
 
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, INDEX_HTML, sizeof(INDEX_HTML) - 1);
@@ -1174,9 +1170,9 @@ static esp_err_t param_post_handler(httpd_req_t *req)
 
 /* ----------------------------------- start ------------------------------------ */
 
-esp_err_t pentax_http_start(void)
+esp_err_t pentax_http_register(httpd_handle_t server)
 {
-    ESP_LOGI(TAG, "Starting Pentax HTTP server");
+    ESP_LOGI(TAG, "Registering Pentax HTTP/WebSocket routes");
 
     s_ws_lock = xSemaphoreCreateMutex();
 
@@ -1189,22 +1185,7 @@ esp_err_t pentax_http_start(void)
         s_ws_fds[i] = -1;
     }
 
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = CONFIG_PENTAXHUB_HTTP_PORT;
-    config.stack_size = 8192;
-    config.max_uri_handlers = 16;
-    config.lru_purge_enable = true;
-
-    httpd_handle_t server = NULL;
-    esp_err_t err = httpd_start(&server, &config);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
     static const httpd_uri_t routes[] = {
-        { .uri = "/",                  .method = HTTP_GET,    .handler = index_handler },
         { .uri = "/api/pentax/status", .method = HTTP_GET,    .handler = status_handler },
         { .uri = "/api/pentax/capture",.method = HTTP_POST,   .handler = capture_handler },
         { .uri = "/api/pentax/af",     .method = HTTP_POST,   .handler = af_handler },
@@ -1226,9 +1207,7 @@ esp_err_t pentax_http_start(void)
 
     s_server = server;
 
-    ESP_LOGI(TAG,
-        "Pentax HTTP/WebSocket server started on port %d",
-        config.server_port);
+    ESP_LOGI(TAG, "Pentax HTTP/WebSocket routes registered");
 
     return ESP_OK;
 }

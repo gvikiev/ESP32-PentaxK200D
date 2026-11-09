@@ -13,10 +13,6 @@
 
 static const char *TAG = "web_server";
 
-#ifndef CONFIG_PENTAXHUB_HTTP_PORT
-#define CONFIG_PENTAXHUB_HTTP_PORT 80
-#endif
-
 /* Embedded static UI assets (see main/CMakeLists.txt EMBED_FILES). */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
@@ -152,7 +148,7 @@ static const char *cam_state_str(cam_state_t s)
 
 /* ---------------------------------- static assets -------------------------------------- */
 
-static esp_err_t index_handler(httpd_req_t *req)
+esp_err_t web_server_index_handler(httpd_req_t *req)
 {
     return send_binary(req, "text/html", index_html_start, index_html_end);
 }
@@ -395,22 +391,9 @@ static esp_err_t api_props_set_handler(httpd_req_t *req)
 
 /* ------------------------------------------ startup ----------------------------------------- */
 
-esp_err_t web_server_start(void)
+esp_err_t web_server_register(httpd_handle_t server)
 {
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = CONFIG_PENTAXHUB_HTTP_PORT;
-    config.stack_size = 8192;
-    config.max_uri_handlers = 16;
-    config.lru_purge_enable = true;
-
-    httpd_handle_t server = NULL;
-    esp_err_t err = httpd_start(&server, &config);
-    if (err != ESP_OK) {
-        return err;
-    }
-
     static const httpd_uri_t routes[] = {
-        { .uri = "/",             .method = HTTP_GET,    .handler = index_handler },
         { .uri = "/app.js",       .method = HTTP_GET,    .handler = app_js_handler },
         { .uri = "/style.css",    .method = HTTP_GET,    .handler = style_css_handler },
         { .uri = "/api/status",   .method = HTTP_GET,    .handler = api_status_handler },
@@ -425,6 +408,6 @@ esp_err_t web_server_start(void)
         ESP_ERROR_CHECK(httpd_register_uri_handler(server, &routes[i]));
     }
 
-    ESP_LOGI(TAG, "web server started on port %d", config.server_port);
+    ESP_LOGI(TAG, "PTP web server routes registered");
     return ESP_OK;
 }

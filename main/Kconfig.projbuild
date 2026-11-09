@@ -42,25 +42,8 @@ menu "PentaxHub Configuration"
         int "USB host library daemon task priority"
         default 5
 
-    choice PENTAXHUB_BACKEND
-        prompt "Camera protocol backend"
-        default PENTAXHUB_BACKEND_PENTAX_SCSI
-        help
-            PTP: original stage-1 backend (camera in [PictBridge] mode).
-            Pentax SCSI: stage-2 backend, USB Mass Storage Bulk-Only
-            transport carrying Pentax vendor SCSI commands (camera in
-            [PC] mode). Only one backend is built into the firmware.
-
-        config PENTAXHUB_BACKEND_PTP
-            bool "Standard PTP (PictBridge mode)"
-
-        config PENTAXHUB_BACKEND_PENTAX_SCSI
-            bool "Pentax SCSI over USB MSC/BOT (PC mode)"
-    endchoice
-
     config PENTAXHUB_STREAM_BLOCK_SIZE
         int "Photo stream block size (bytes)"
-        depends on PENTAXHUB_BACKEND_PENTAX_SCSI
         default 16384
         range 4096 65536
         help
@@ -69,7 +52,6 @@ menu "PentaxHub Configuration"
 
     config PENTAXHUB_STREAM_BLOCKS
         int "Photo stream block count"
-        depends on PENTAXHUB_BACKEND_PENTAX_SCSI
         default 8
         range 2 64
         help
@@ -79,7 +61,6 @@ menu "PentaxHub Configuration"
 
     config PENTAXHUB_PENTAX_BUF_TYPE
         int "Pentax select-buffer type"
-        depends on PENTAXHUB_BACKEND_PENTAX_SCSI
         default 0
         help
             Second argument of the Select Buffer command (image format
@@ -87,7 +68,6 @@ menu "PentaxHub Configuration"
 
     config PENTAXHUB_PENTAX_BUF_RES
         int "Pentax select-buffer resolution"
-        depends on PENTAXHUB_BACKEND_PENTAX_SCSI
         default 0
         help
             Third argument of the Select Buffer command. UNVERIFIED.

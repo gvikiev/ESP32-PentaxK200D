@@ -6,12 +6,10 @@
 #include "esp_log.h"
 #include "usb/usb_host.h"
 #include "usb/usb_helpers.h"
+#include "usb_host_shared.h"
 
 #ifndef CONFIG_PENTAXHUB_USB_BULK_BUFFER_SIZE
 #define CONFIG_PENTAXHUB_USB_BULK_BUFFER_SIZE 8192
-#endif
-#ifndef CONFIG_PENTAXHUB_USB_DAEMON_TASK_PRIO
-#define CONFIG_PENTAXHUB_USB_DAEMON_TASK_PRIO 5
 #endif
 
 #define PTP_DEFAULT_TIMEOUT_MS   5000u
@@ -39,8 +37,6 @@ static ptp_link_event_cb_t s_link_cb;
 static void *s_link_cb_ctx;
 
 static uint32_t s_next_tid;
-
-static TaskHandle_t s_daemon_task_hdl;
 
 /* Pushback buffer for the bulk-IN pipe: lets us read a container's 12 byte
  * header separately from its payload/trailer without losing any bytes that
@@ -76,14 +72,6 @@ bool ptp_transport_has_event_endpoint(void)
 }
 
 /* ------------------------------ Daemon task --------------------------------------- */
-
-static void usb_lib_daemon_task(void *arg)
-{
-    while (1) {
-        uint32_t event_flags = 0;
-        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
-    }
-}
 
 /* --------------------------- Synchronous transfer wait ----------------------------- */
 
@@ -542,19 +530,9 @@ esp_err_t ptp_transport_init(ptp_link_event_cb_t cb, void *cb_ctx)
     s_link_cb = cb;
     s_link_cb_ctx = cb_ctx;
 
-    usb_host_config_t host_config = {
-        .skip_phy_setup = false,
-        .intr_flags = ESP_INTR_FLAG_LEVEL1,
-    };
-    esp_err_t err = usb_host_install(&host_config);
+    esp_err_t err = usb_host_shared_acquire();
     if (err != ESP_OK) {
         return err;
-    }
-
-    BaseType_t ok = xTaskCreatePinnedToCore(usb_lib_daemon_task, "usb_daemon", 4096, NULL,
-                                             CONFIG_PENTAXHUB_USB_DAEMON_TASK_PRIO, &s_daemon_task_hdl, 0);
-    if (ok != pdPASS) {
-        return ESP_ERR_NO_MEM;
     }
 
     usb_host_client_config_t client_config = {
