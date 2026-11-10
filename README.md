@@ -81,6 +81,26 @@ idf.py menuconfig   # optional: change the AP SSID/password under
 idf.py -p PORT flash monitor
 ```
 
+## Testing
+
+`host_tests/` has host-based unit tests for the modules that don't touch
+real hardware: the status-buffer parser (`pentax_status.c`), the BOT
+transport (`bot.c`), and the Pentax vendor-SCSI layer's pure helpers plus a
+full `pentax_scsi_exec()` integration run against a scripted mock device
+(`pentax_scsi.c`). They compile with any C99 compiler, no ESP-IDF needed:
+
+```bash
+sh host_tests/run.sh
+```
+
+Fault paths that would be slow or flaky to reproduce against a real camera
+(USB stalls, phase errors, corrupted/truncated responses, a camera that
+never reports "ready") are exercised directly via the mock instead. What
+these tests can't cover -- the actual camera's real protocol quirks,
+hardware timing, USB enumeration -- still needs the real device; see
+`docs/pentax_k200d_architecture_gemeni.md` for the hypotheses that remain
+unverified on real hardware (H-1, H-11/H-18, etc.).
+
 ## Using it
 
 1. Connect the camera to the ESP32-S3's USB port (power it on first),
